@@ -5,7 +5,7 @@ import logging
 import chromadb
 
 from ragent.config import CHROMA_DIR, COLLECTION_QA, COLLECTION_SUMMARIES, ensure_dirs
-from ragent.transcript import Turn
+from ragent.conversation_collector import Turn
 
 logger = logging.getLogger("ragent")
 

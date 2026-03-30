@@ -7,7 +7,7 @@ and indexes the Q&A pair in ChromaDB.
 import logging
 
 from ragent.pending import delete_pending_prompt, load_pending_prompt
-from ragent.transcript import Turn, get_last_turn
+from ragent.conversation_collector import Turn, get_last_turn
 from ragent.vectordb import RAGentDB
 
 logger = logging.getLogger("ragent")

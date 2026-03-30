@@ -7,7 +7,7 @@ and indexes it in ChromaDB.
 import logging
 
 from ragent.pending import delete_pending_prompt
-from ragent.transcript import get_session_summary_text, parse_transcript
+from ragent.conversation_collector import get_session_summary_text, parse_transcript
 from ragent.vectordb import RAGentDB
 
 logger = logging.getLogger("ragent")
