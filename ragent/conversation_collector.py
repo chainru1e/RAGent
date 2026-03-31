@@ -54,6 +54,16 @@ class Turn:
         # 모든 인스턴스가 같은 딕셔너리를 공유하는 버그가 발생하므로 이렇게 처리한다.
         self.metadata = metadata if metadata is not None else {}
 
+    def to_dict(self) -> dict:
+        """Turn 객체를 일반 딕셔너리로 변환한다."""
+        return {
+            "user_prompt": self.user_prompt,
+            "assistant_response": self.assistant_response,
+            "user_uuid": self.user_uuid,
+            "timestamp": self.timestamp,
+            "metadata": self.metadata,
+        }
+
 
 # ---------------------------------------------------------------------------
 # JSONL 메시지 파서
@@ -158,20 +168,20 @@ def parse_claude_history(file_path):
 # 어댑터: Turn 기반 API (기존 transcript.py 호환 인터페이스)
 # ---------------------------------------------------------------------------
 
-def parse_transcript(path: str | Path) -> list[Turn]:
-    """JSONL 트랜스크립트 파일 전체를 파싱하여 Turn 리스트로 반환한다.
+def parse_transcript(path: str | Path) -> list[dict]:
+    """JSONL 트랜스크립트 파일 전체를 파싱하여 딕셔너리 리스트로 반환한다.
 
     내부적으로 message_parser를 사용해 각 JSONL 라인을 파싱한 뒤,
-    연속된 user → assistant 메시지를 한 쌍(Turn)으로 묶는다.
+    연속된 user → assistant 메시지를 한 쌍으로 묶는다.
     message_parser는 uuid를 반환하지 않으므로, 여기서 JSONL 원본 데이터에서
-    uuid를 직접 추출하여 Turn 객체에 포함시킨다.
+    uuid를 직접 추출하여 포함시킨다.
 
     Args:
         path: JSONL 트랜스크립트 파일 경로. 문자열 또는 Path 객체 모두 허용한다.
 
     Returns:
-        Turn 객체의 리스트. 파일이 존재하지 않으면 빈 리스트를 반환한다.
-        user 메시지 다음에 assistant 응답이 없으면 빈 응답으로 Turn을 생성한다.
+        딕셔너리의 리스트. 파일이 존재하지 않으면 빈 리스트를 반환한다.
+        user 메시지 다음에 assistant 응답이 없으면 빈 응답으로 딕셔너리를 생성한다.
     """
     path = Path(path)
     if not path.exists():
@@ -193,10 +203,8 @@ def parse_transcript(path: str | Path) -> list[Turn]:
         if conversation:
             messages.append((conversation, data.get("uuid", "")))
 
-    # user → assistant 순서쌍을 Turn 객체로 변환한다.
-    # user 메시지 바로 다음이 assistant이면 쌍으로 묶고,
-    # assistant가 아니면(다음 user이거나 끝) 빈 응답의 Turn을 생성한다.
-    turns: list[Turn] = []
+    # user → assistant 순서쌍을 Turn 객체로 변환한 뒤 딕셔너리로 반환한다.
+    turns: list[dict] = []
     i = 0
     while i < len(messages):
         msg, uuid = messages[i]
@@ -212,7 +220,7 @@ def parse_transcript(path: str | Path) -> list[Turn]:
                 assistant_response=assistant_text,
                 user_uuid=uuid,
                 timestamp=msg.get("timestamp", ""),
-            ))
+            ).to_dict())
         else:
             # user 없이 단독으로 나온 assistant 메시지는 건너뛴다
             i += 1
@@ -220,8 +228,8 @@ def parse_transcript(path: str | Path) -> list[Turn]:
     return turns
 
 
-def get_last_turn(path: str | Path) -> Turn | None:
-    """트랜스크립트에서 마지막 Turn(사용자-어시스턴트 쌍)만 반환한다.
+def get_last_turn(path: str | Path) -> dict | None:
+    """트랜스크립트에서 마지막 턴(사용자-어시스턴트 쌍)만 딕셔너리로 반환한다.
 
     Stop 훅에서 가장 최근 Q&A 쌍을 ChromaDB에 인덱싱할 때 사용된다.
 
@@ -229,20 +237,20 @@ def get_last_turn(path: str | Path) -> Turn | None:
         path: JSONL 트랜스크립트 파일 경로.
 
     Returns:
-        마지막 Turn 객체. 트랜스크립트가 비어있거나 파일이 없으면 None을 반환한다.
+        마지막 턴 딕셔너리. 트랜스크립트가 비어있거나 파일이 없으면 None을 반환한다.
     """
     turns = parse_transcript(path)
     return turns[-1] if turns else None
 
 
-def get_session_summary_text(turns: list[Turn]) -> str:
-    """Turn 리스트를 사람이 읽을 수 있는 세션 요약 텍스트로 변환한다.
+def get_session_summary_text(turns: list[dict]) -> str:
+    """턴 딕셔너리 리스트를 사람이 읽을 수 있는 세션 요약 텍스트로 변환한다.
 
     SessionEnd 훅에서 전체 대화 내용을 요약하여 ChromaDB에 저장할 때 사용된다.
-    각 Turn의 질문은 최대 200자, 응답은 최대 300자까지만 포함한다.
+    각 턴의 질문은 최대 200자, 응답은 최대 300자까지만 포함한다.
 
     Args:
-        turns: Turn 객체의 리스트.
+        turns: 턴 딕셔너리의 리스트.
 
     Returns:
         "Turn 1:\\nQ: ...\\nA: ..." 형식으로 연결된 요약 문자열.
@@ -253,8 +261,8 @@ def get_session_summary_text(turns: list[Turn]) -> str:
 
     lines = []
     for i, turn in enumerate(turns, 1):
-        q = turn.user_prompt[:200]
-        a = turn.assistant_response[:300]
+        q = turn["user_prompt"][:200]
+        a = turn["assistant_response"][:300]
         lines.append(f"Turn {i}:\nQ: {q}\nA: {a}")
 
     return "\n\n".join(lines)

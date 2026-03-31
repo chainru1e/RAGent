@@ -32,7 +32,7 @@ def handle(data: dict) -> None:
     # Upsert all Q&A pairs (covers anything Stop might have missed)
     indexed = 0
     for turn in turns:
-        if turn.user_prompt and turn.assistant_response:
+        if turn["user_prompt"] and turn["assistant_response"]:
             db.index_qa_pair(turn)
             indexed += 1
 
@@ -43,7 +43,7 @@ def handle(data: dict) -> None:
     if summary_text:
         metadata = {
             "turn_count": len(turns),
-            "first_prompt": turns[0].user_prompt[:200],
+            "first_prompt": turns[0]["user_prompt"][:200],
         }
         db.index_session_summary(session_id, summary_text, metadata)
         logger.info("SessionEnd: indexed session summary for %s", session_id)

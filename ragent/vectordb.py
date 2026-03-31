@@ -5,7 +5,6 @@ import logging
 import chromadb
 
 from ragent.config import CHROMA_DIR, COLLECTION_QA, COLLECTION_SUMMARIES, ensure_dirs
-from ragent.conversation_collector import Turn
 
 logger = logging.getLogger("ragent")
 
@@ -19,14 +18,14 @@ class RAGentDB:
         self._qa = self._client.get_or_create_collection(name=COLLECTION_QA)
         self._summaries = self._client.get_or_create_collection(name=COLLECTION_SUMMARIES)
 
-    def index_qa_pair(self, turn: Turn) -> None:
+    def index_qa_pair(self, turn: dict) -> None:
         """Index a single Q&A pair. Uses user_uuid as ID for upsert."""
-        doc_id = turn.user_uuid or f"turn-{hash(turn.user_prompt)}"
-        document = f"Q: {turn.user_prompt}\nA: {turn.assistant_response[:1000]}"
+        doc_id = turn.get("user_uuid") or f"turn-{hash(turn['user_prompt'])}"
+        document = f"Q: {turn['user_prompt']}\nA: {turn['assistant_response'][:1000]}"
         metadata = {
-            "timestamp": turn.timestamp or "",
-            "prompt_length": len(turn.user_prompt),
-            "response_length": len(turn.assistant_response),
+            "timestamp": turn.get("timestamp", ""),
+            "prompt_length": len(turn["user_prompt"]),
+            "response_length": len(turn["assistant_response"]),
         }
         self._qa.upsert(
             ids=[doc_id],

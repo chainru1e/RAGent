@@ -7,7 +7,7 @@ and indexes the Q&A pair in ChromaDB.
 import logging
 
 from ragent.pending import delete_pending_prompt, load_pending_prompt
-from ragent.conversation_collector import Turn, get_last_turn
+from ragent.conversation_collector import get_last_turn
 from ragent.vectordb import RAGentDB
 
 logger = logging.getLogger("ragent")
@@ -41,16 +41,16 @@ def handle(data: dict) -> None:
 
     # Use pending prompt if available, otherwise use transcript's prompt
     if pending:
-        turn = Turn(
-            user_prompt=pending["prompt"],
-            assistant_response=last_turn.assistant_response,
-            user_uuid=last_turn.user_uuid,
-            timestamp=pending.get("timestamp", last_turn.timestamp),
-        )
+        turn = {
+            "user_prompt": pending["prompt"],
+            "assistant_response": last_turn["assistant_response"],
+            "user_uuid": last_turn["user_uuid"],
+            "timestamp": pending.get("timestamp", last_turn["timestamp"]),
+        }
     else:
         turn = last_turn
 
-    if not turn.assistant_response:
+    if not turn["assistant_response"]:
         logger.debug("Stop: no assistant response found, skipping indexing")
         return
 

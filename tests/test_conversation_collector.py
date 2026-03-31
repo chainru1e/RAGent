@@ -30,36 +30,36 @@ def test_parse_transcript_basic():
 
 def test_parse_transcript_content():
     turns = parse_transcript(SAMPLE)
-    assert turns[0].user_prompt == "What is Python?"
-    assert "high-level programming language" in turns[0].assistant_response
-    assert turns[0].user_uuid == "uuid-001"
+    assert turns[0]["user_prompt"] == "What is Python?"
+    assert "high-level programming language" in turns[0]["assistant_response"]
+    assert turns[0]["user_uuid"] == "uuid-001"
 
 
 def test_thinking_blocks_included():
     turns = parse_transcript(SAMPLE)
     # Second turn includes [thinking] marker and thinking content
-    assert "[thinking]" in turns[1].assistant_response
-    assert "Let me explain pip" in turns[1].assistant_response
-    assert "pip install" in turns[1].assistant_response
+    assert "[thinking]" in turns[1]["assistant_response"]
+    assert "Let me explain pip" in turns[1]["assistant_response"]
+    assert "pip install" in turns[1]["assistant_response"]
 
 
 def test_tool_result_included():
     turns = parse_transcript(SAMPLE)
-    prompts = [t.user_prompt for t in turns]
+    prompts = [t["user_prompt"] for t in turns]
     assert any("[tool_result]" in p for p in prompts)
 
 
 def test_command_name_included():
     turns = parse_transcript(SAMPLE)
-    prompts = [t.user_prompt for t in turns]
+    prompts = [t["user_prompt"] for t in turns]
     assert any("command-name" in p for p in prompts)
 
 
 def test_get_last_turn():
     turn = get_last_turn(SAMPLE)
     assert turn is not None
-    assert turn.user_prompt == "What is a virtual environment?"
-    assert "isolated Python environment" in turn.assistant_response
+    assert turn["user_prompt"] == "What is a virtual environment?"
+    assert "isolated Python environment" in turn["assistant_response"]
 
 
 def test_get_last_turn_nonexistent():
