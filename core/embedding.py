@@ -4,71 +4,63 @@
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from config.settings import DENSE_MODEL, DENSE_DIMENSION, ALPHA
-from typing import Dict
+from rank_bm25 import BM25Okapi
+from typing import Dict, List
+from collections import Counter
+import re
 
 
 class HybridEmbedding:
-    '''
-    하이브리드 임베딩 (Dense + Sparse)
-    
-    특징:
-    - Dense: all-MiniLM-L6-v2 (384차원)
-    - Sparse: BM25Okapi (키워드 기반)
-    - 융합: 가중 평균 (alpha 가중치)
-    '''
-    
-    def __init__(
-        self,
-        dense_model_name: str = DENSE_MODEL,
-        alpha: float = ALPHA
-    ):
-        print(f"✅ HybridEmbedding 초기화")
-        print(f"   Dense 모델: {dense_model_name}")
-        print(f"   Dense 차원: {DENSE_DIMENSION}")
-        print(f"   Alpha (Dense 가중치): {alpha}")
-        
+    def __init__(self, dense_model_name="all-MiniLM-L6-v2"):
+        print("✅ HybridEmbedding 초기화")
+
         self.dense_model = SentenceTransformer(dense_model_name)
-        self.alpha = alpha
-        self.model_name = dense_model_name
-    
+
+        self.bm25 = None
+        self.bm25_trained = False
+        self.tokenized_docs = []
+        self.vocabulary = {}
+
     def get_dense_embedding(self, text: str) -> np.ndarray:
-        '''
-        단일 텍스트의 Dense 임베딩
-        
-        Args:
-            text: 입력 텍스트
-        
-        Returns:
-            384차원 벡터 (np.ndarray)
-        '''
-        embedding = self.dense_model.encode(text, convert_to_numpy=True)
-        return np.array(embedding, dtype=np.float32)
-    
-    def embed_batch(self, texts: list) -> np.ndarray:
-        '''
-        배치 임베딩 (속도 최적화)
-        
-        Args:
-            texts: 텍스트 리스트
-        
-        Returns:
-            (N, 384) 형태의 배열
-        '''
-        embeddings = self.dense_model.encode(
-            texts,
-            batch_size=32,
-            show_progress_bar=True,
-            convert_to_numpy=True
-        )
-        
-        return np.array(embeddings, dtype=np.float32)
-    
-    def get_embedding_info(self) -> Dict:
-        '''임베딩 모델 정보'''
+        return self.dense_model.encode(text, convert_to_numpy=True).astype(np.float32)
+
+    def embed_batch(self, texts: List[str]) -> np.ndarray:
+        return self.dense_model.encode(texts, convert_to_numpy=True).astype(np.float32)
+
+    def _tokenize(self, text: str) -> List[str]:
+        text = text.lower()
+        text = re.sub(r'[^a-z0-9가-힣_]', ' ', text)
+        return text.split()
+
+    def train_bm25(self, documents: List[str]):
+        self.tokenized_docs = [self._tokenize(doc) for doc in documents]
+
+        vocab = set()
+        for tokens in self.tokenized_docs:
+            vocab.update(tokens)
+
+        self.vocabulary = {word: idx for idx, word in enumerate(sorted(vocab))}
+        self.bm25 = BM25Okapi(self.tokenized_docs)
+        self.bm25_trained = True
+
+        print(f"✅ BM25 학습 완료 ({len(self.vocabulary)} vocab)")
+
+    # 🔥 핵심: Sparse Vector 생성
+
+    def get_sparse_vector(self, text: str) -> Dict:
+        tokens = self._tokenize(text)
+
+        token_counts = Counter(tokens)
+
+        indices = []
+        values = []
+
+        for token, count in token_counts.items():
+            if token in self.vocabulary:
+                indices.append(self.vocabulary[token])
+                values.append(float(count))  # 빈도 기반
+
         return {
-            "model_name": self.model_name,
-            "dimension": DENSE_DIMENSION,
-            "alpha": self.alpha,
-            "device": str(self.dense_model.device)
+            "indices": indices,
+            "values": values
         }

@@ -32,7 +32,6 @@ class QdrantRAGSystem:
         collection_name: str = QDRANT_COLLECTION,
         chunk_size: int = CHUNK_SIZE,
         chunk_overlap: int = CHUNK_OVERLAP,
-        alpha: float = ALPHA,
         qdrant_path: str = "./qdrant_storage"
     ):
         print("\n" + "=" * 70)
@@ -48,102 +47,57 @@ class QdrantRAGSystem:
         self.loader = DocumentLoader()
         
         self.embedding = HybridEmbedding(
-            dense_model_name='all-MiniLM-L6-v2',
-            alpha=alpha
+            dense_model_name='all-MiniLM-L6-v2'
         )
         
         self.storage = QdrantStorage(
             collection_name=collection_name,
-            vector_size=384,
             path=qdrant_path
         )
         
         print(f"\n✅ RAG 시스템 초기화 완료\n")
     
-    def ingest_documents(self, documents: List[Dict]) -> int:
-        '''
-        문서 수집 및 벡터화 → Qdrant 저장
-        '''
-        
-        print("\n" + "=" * 70)
-        print("📥 문서 수집 및 벡터화")
-        print("=" * 70)
-        
-        total_chunks = 0
-        
+    def ingest_documents(self, documents):
+        all_texts = [doc["text"] for doc in documents]
+
+        # 🔥 BM25 학습
+        self.embedding.train_bm25(all_texts)
+
         for doc in documents:
-            doc_id = doc.get("doc_id")
-            text = doc.get("text", "")
-            doc_metadata = doc.get("metadata", {})
-            
-            print(f"\n📄 {doc_id} ({len(text)} 글자)")
-            
-            # 청킹
-            chunks = self.chunker.chunk_text(text, doc_id)
-            print(f"   청킹: {len(chunks)}개 청크")
-            
-            # 임베딩 + 저장
+            chunks = self.chunker.chunk_text(doc["text"], doc["doc_id"])
+
             chunks_to_save = []
-            
-            for i, chunk in enumerate(chunks):
-                dense_vector = self.embedding.get_dense_embedding(chunk["text"])
-                
+
+            for chunk in chunks:
+                dense = self.embedding.get_dense_embedding(chunk["text"])
+                sparse = self.embedding.get_sparse_vector(chunk["text"])
+
                 chunks_to_save.append({
                     "chunk_id": chunk["chunk_id"],
-                    "vector": dense_vector,
-                    "text": chunk["text"],
-                    "metadata": {
-                        "original_doc_id": chunk["original_doc_id"],
-                        "chunk_num": chunk["chunk_num"],
-                        **doc_metadata
-                    }
+                    "dense": dense,
+                    "sparse": sparse,
+                    "text": chunk["text"]
                 })
-            
-            # Qdrant에 저장
+
             self.storage.add_points_batch(chunks_to_save)
-            total_chunks += len(chunks)
-        
-        print(f"\n" + "=" * 70)
-        print(f"✅ 수집 완료: 총 {total_chunks}개 청크 저장")
-        print("=" * 70)
-        
-        return total_chunks
     
-    def search(
-        self,
-        query: str,
-        top_k: int = SEARCH_TOP_K,
-        filter_dict: Dict = None
-    ) -> List[Dict]:
-        '''
-        쿼리 검색 (Qdrant)
-        '''
-        
-        print(f"\n🔍 검색: '{query}'")
-        print("-" * 70)
-        
-        query_vector = self.embedding.get_dense_embedding(query)
-        
-        results = self.storage.search(
-            query_vector=query_vector,
-            top_k=top_k,
-            filter_dict=filter_dict
-        )
-        
-        formatted_results = []
-        
-        for chunk_id, score, text in results:
-            if score >= SEARCH_SCORE_THRESHOLD:
-                formatted_results.append({
-                    "chunk_id": chunk_id,
-                    "text": text,
-                    "score": score,
-                    "metadata": self._extract_metadata(chunk_id)
-                })
-        
-        print(f"결과: {len(formatted_results)}개")
-        
-        return formatted_results
+    def search(self, query, top_k=5):
+        # 1️⃣ query → embedding
+        dense = self.embedding.get_dense_embedding(query)
+        sparse = self.embedding.get_sparse_vector(query)
+
+        # 2️⃣ storage에 검색 맡김 (핵심)
+        raw_results = self.storage.search(dense, top_k=20)
+
+        # 3️⃣ 결과 포맷 변환
+        results = []
+        for text, score in raw_results:
+            results.append({
+                "text": text,
+                "score": score
+            })
+
+        return results
     
     def summarize_results(self, results: List[Dict]) -> str:
         '''

@@ -47,7 +47,7 @@ def main():
     stats = rag.get_stats()
     print(f"컬렉션: {stats['collection']}")
     print(f"총 청크: {stats['total_points']}")
-    print(f"벡터 차원: {stats['vector_size']}")
+    print(f"상태: {stats.get('status')}")
     
     # 5️⃣ 검색 테스트
     print("\n4️⃣ 검색 테스트")
