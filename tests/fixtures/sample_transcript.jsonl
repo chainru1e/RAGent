@@ -1,9 +1,0 @@
-{"type":"user","message":{"role":"user","content":"What is Python?"},"uuid":"uuid-001","timestamp":"2026-03-27T10:00:00Z"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Python is a high-level programming language known for its readability and versatility."}]},"uuid":"uuid-002","timestamp":"2026-03-27T10:00:01Z"}
-{"type":"user","message":{"role":"user","content":"How do I install packages?"},"uuid":"uuid-003","timestamp":"2026-03-27T10:01:00Z"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me explain pip..."},{"type":"text","text":"Use pip to install packages: `pip install package_name`. You can also use a requirements.txt file."}]},"uuid":"uuid-004","timestamp":"2026-03-27T10:01:01Z"}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"some tool output"}]},"uuid":"uuid-005","timestamp":"2026-03-27T10:02:00Z","isMeta":false}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"read_file"},{"type":"text","text":"Here is the file content."}]},"uuid":"uuid-006","timestamp":"2026-03-27T10:02:01Z"}
-{"type":"user","message":{"role":"user","content":"<command-name>help</command-name>"},"uuid":"uuid-007","timestamp":"2026-03-27T10:03:00Z"}
-{"type":"user","message":{"role":"user","content":"What is a virtual environment?"},"uuid":"uuid-008","timestamp":"2026-03-27T10:04:00Z","isMeta":false}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"A virtual environment is an isolated Python environment that allows you to manage dependencies per project."}]},"uuid":"uuid-009","timestamp":"2026-03-27T10:04:01Z"}

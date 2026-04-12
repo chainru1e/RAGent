@@ -5,10 +5,14 @@ and indexes the Q&A pair in ChromaDB.
 """
 
 import logging
+import os
 
-from ragent.pending import delete_pending_prompt, load_pending_prompt
-from ragent.conversation_collector import get_last_turn
-from ragent.vectordb import RAGentDB
+from ragent.modules.parsing_modules import *
+from ragent.modules.chunking_modules import *
+from ragent.modules.intent_classifying_modules import *
+from ragent.modules.embedding_modules import *
+from ragent.vectordb import *
+from ragent.config import GEMINI_API_KEY
 
 logger = logging.getLogger("ragent")
 
@@ -31,31 +35,35 @@ def handle(data: dict) -> None:
         logger.warning("Stop: missing transcript_path")
         return
 
-    # Try pending prompt first, fall back to transcript
-    pending = load_pending_prompt(session_id)
-    last_turn = get_last_turn(transcript_path)
+    parser = MessageParser(transcript_path)
+    chunker = Chunker()
+    intent_classifier = HybridClassifier(GEMINI_API_KEY)
+    embedder = HybridEmbedding()
+    vectordb = QdrantStorage(os.path.basename(os.path.dirname(transcript_path)))
+
+    last_turn = parser.parse_last_turn()
 
     if not last_turn:
         logger.warning("Stop: no turns found in transcript %s", transcript_path)
         return
 
-    # Use pending prompt if available, otherwise use transcript's prompt
-    if pending:
-        turn = {
-            "user_prompt": pending["prompt"],
-            "assistant_response": last_turn["assistant_response"],
-            "user_uuid": last_turn["user_uuid"],
-            "timestamp": pending.get("timestamp", last_turn["timestamp"]),
-        }
-    else:
-        turn = last_turn
+    chunks = chunker.process_turn(last_turn)
 
-    if not turn["assistant_response"]:
-        logger.debug("Stop: no assistant response found, skipping indexing")
+    context_chunk = next((chunk for chunk in chunks if chunk.metadata.chunk_id), None)
+    if not context_chunk:
+        logger.warning("Stop: no context chunk found")
         return
 
-    db = RAGentDB()
-    db.index_qa_pair(turn)
-    logger.info("Stop: indexed Q&A pair for session %s", session_id)
+    intent = intent_classifier.classify(context_chunk.payload).category
+    texts = [chunk.payload for chunk in chunks]
+    vectors = embedder.embed_batch(texts, batch_size=32)
 
-    delete_pending_prompt(session_id)
+    for chunk, vector in zip(chunks, vectors):
+        chunk.metadata.type = intent
+        chunk.vector = vector
+
+    try:
+        count = vectordb.add_points_batch(chunks)
+        logger.info("Stop: indexed %d chunks for session %s", count, session_id)
+    finally:
+        vectordb.close()

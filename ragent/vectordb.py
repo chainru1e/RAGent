@@ -1,70 +1,101 @@
-"""ChromaDB wrapper for RAGent."""
+from ragent.config import QDRANT_DIR, DENSE_SIZE, ensure_dirs
+from enum import Enum
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    PointStruct,
+    VectorParams,
+    SparseVectorParams,
+    Distance
+)
 
-import logging
+from ragent.models.chunk import Chunk
 
-import chromadb
-
-from ragent.config import CHROMA_DIR, COLLECTION_QA, COLLECTION_SUMMARIES, ensure_dirs
-
-logger = logging.getLogger("ragent")
-
-
-class RAGentDB:
-    """ChromaDB wrapper managing qa_pairs and session_summaries collections."""
-
-    def __init__(self) -> None:
+class QdrantStorage:
+    def __init__(self, collection_name: str, path=QDRANT_DIR):
         ensure_dirs()
-        self._client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        self._qa = self._client.get_or_create_collection(name=COLLECTION_QA)
-        self._summaries = self._client.get_or_create_collection(name=COLLECTION_SUMMARIES)
+        self.collection_name = collection_name
+        self.client = QdrantClient(path=path)
+        self._init_collection()
 
-    def index_qa_pair(self, turn: dict) -> None:
-        """Index a single Q&A pair. Uses user_uuid as ID for upsert."""
-        doc_id = turn.get("user_uuid") or f"turn-{hash(turn['user_prompt'])}"
-        document = f"Q: {turn['user_prompt']}\nA: {turn['assistant_response'][:1000]}"
-        metadata = {
-            "timestamp": turn.get("timestamp", ""),
-            "prompt_length": len(turn["user_prompt"]),
-            "response_length": len(turn["assistant_response"]),
-        }
-        self._qa.upsert(
-            ids=[doc_id],
-            documents=[document],
-            metadatas=[metadata],
+    def _init_collection(self):
+        try:
+            self.client.get_collection(self.collection_name)
+        except:
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config={
+                    "dense": VectorParams(size=DENSE_SIZE, distance=Distance.COSINE)
+                },
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams()
+                }
+            )
+
+    def add_point(self, chunk: Chunk):
+        meta = chunk.metadata
+        vector = chunk.vector  # HybridVector
+
+        point = PointStruct(
+            id=self._string_to_id(meta.chunk_id),
+            vector={
+                "dense": vector.dense.tolist(),
+                "sparse": vector.sparse  # SparseVector 객체
+            },
+            payload={
+                "text": chunk.payload,
+                "chunk_id": meta.chunk_id,
+                "parent_id": meta.parent_id,
+                "file_path": meta.file_path,
+                "type": meta.type.value if isinstance(meta.type, Enum) else meta.type
+            }
         )
 
-    def index_session_summary(
-        self, session_id: str, summary: str, metadata: dict | None = None
-    ) -> None:
-        """Index a session summary."""
-        meta = metadata or {}
-        meta.setdefault("session_id", session_id)
-        self._summaries.upsert(
-            ids=[session_id],
-            documents=[summary],
-            metadatas=[meta],
-        )
+        self.client.upsert(self.collection_name, [point])
 
-    def search(
-        self,
-        query: str,
-        collection: str = COLLECTION_QA,
-        n_results: int = 5,
-        where: dict | None = None,
-    ) -> list[dict]:
-        """Search a collection by query text."""
-        coll = self._qa if collection == COLLECTION_QA else self._summaries
-        kwargs: dict = {"query_texts": [query], "n_results": n_results}
-        if where:
-            kwargs["where"] = where
-        results = coll.query(**kwargs)
-        out = []
-        if results and results.get("documents"):
-            for i, doc in enumerate(results["documents"][0]):
-                entry = {"document": doc}
-                if results.get("metadatas"):
-                    entry["metadata"] = results["metadatas"][0][i]
-                if results.get("distances"):
-                    entry["distance"] = results["distances"][0][i]
-                out.append(entry)
-        return out
+    def add_points_batch(self, chunks: list[Chunk]) -> int:
+        points = []
+
+        for chunk in chunks:
+            meta = chunk.metadata
+            vector = chunk.vector  # HybridVector
+
+            points.append(
+                PointStruct(
+                    id=self._string_to_id(meta.chunk_id),
+                    vector={
+                        "dense": vector.dense.tolist(),
+                        "sparse": vector.sparse
+                    },
+                    payload={
+                        "text": chunk.payload,
+                        "chunk_id": meta.chunk_id,
+                        "parent_id": meta.parent_id,
+                        "file_path": meta.file_path,
+                        "type": meta.type.value if isinstance(meta.type, Enum) else meta.type
+                    }
+                )
+            )
+
+        self.client.upsert(self.collection_name, points)
+        return len(points)
+    
+    def get_stats(self) -> dict:
+        try:
+            info = self.client.get_collection(self.collection_name)
+
+            return {
+                "collection": self.collection_name,
+                "total_points": info.points_count,
+                "status": str(info.status)
+            }
+        except Exception as e:
+            return {
+                "collection": self.collection_name,
+                "error": str(e)
+            }
+        
+    def _string_to_id(self, s: str) -> int:
+        return int(hash(s) & 0x7FFFFFFF)
+    
+    def close(self):
+        self.client.close()
