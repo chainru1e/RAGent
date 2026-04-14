@@ -8,13 +8,13 @@ version = "0.1.0"
 description = "RAG-based conversation indexer for Claude Code hooks"
 requires-python = ">=3.10"
 dependencies = [
-    pip install python-dotenv
-    pip install astchunk
-    pip install FlagEmbedding
-    pip install qdrant-client
-    pip install torch
-    pip install google-generativeai
-    pip install "transformers==4.44.0"
+    "python-dotenv",
+    "astchunk",
+    "FlagEmbedding",
+    "qdrant-client",
+    "torch",
+    "google-generativeai",
+    "transformers==4.44.0"
 ]
 
 [project.optional-dependencies]
