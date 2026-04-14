@@ -1,5 +1,4 @@
 from ragent.models.intent import IntentCategory
-from enum import Enum
 
 class ChunkMetaData:
     def __init__(self,
