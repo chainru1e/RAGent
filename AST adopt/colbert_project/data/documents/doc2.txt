@@ -1,0 +1,1 @@
+LoRA(Low-Rank Adaptation)는 효율적인 파인튜닝 방법이다. 

@@ -1,0 +1,1 @@
+Hybrid 검색은 Dense + Sparse 결합 방식이다. 
