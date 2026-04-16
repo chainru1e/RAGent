@@ -24,8 +24,10 @@ class AdapterTrainer:
 
             adapted = self.adapter(base_emb)
             loss = self.loss_fn(
-                adapted, labels,
-                temperature=self.config["loss"]["temperature"]
+                adapted=adapted,
+                base_emb=base_emb,
+                labels=labels,
+                **self.config.get("loss", {})
             )
 
             self.optimizer.zero_grad()
