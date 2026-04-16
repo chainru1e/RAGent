@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 
-class NCANetwork(nn.Module):
+class NCAAdapter(nn.Module):
     """
     Deep Non-Linear MLP for NCA Projection.
     

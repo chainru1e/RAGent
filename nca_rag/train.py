@@ -13,7 +13,7 @@ from config import (
     LEARNING_RATE, WEIGHT_DECAY, EPOCHS, BATCH_SIZE,
     NCA_TEMPERATURE, T_MAX, PATIENCE, MODEL_SAVE_PATH,
 )
-from models import NCANetwork, NCALoss
+from nca_rag.NCA_Adapter import NCANetwork, NCALoss
 from trainer import NCATrainer
 
 
