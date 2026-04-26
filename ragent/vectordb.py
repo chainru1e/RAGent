@@ -85,6 +85,28 @@ class QdrantStorage:
 
         self.client.upsert(self.collection_name, points)
         return len(points)
+    
+    def payload_to_chunk(self, payload: dict) -> Chunk:
+        """Qdrant Payload를 Chunk 객체로 변환합니다."""
+        intent_type = None
+        if payload.get("type"):
+            try:
+                intent_type = IntentCategory(payload.get("type"))
+            except ValueError:
+                intent_type = payload.get("type") 
+
+        metadata = ChunkMetaData(
+            chunk_id=payload.get("chunk_id"),
+            parent_id=payload.get("parent_id"),
+            file_path=payload.get("file_path"),
+            type=intent_type
+        )
+        
+        return Chunk(
+            metadata=metadata,
+            payload=payload.get("text"),
+            vector=None 
+        )
 
     def hybrid_search(self, query_vector: HybridVector, limit: int = 5) -> list[Chunk]:
         """
@@ -113,36 +135,7 @@ class QdrantStorage:
             with_payload=True
         )
 
-        search_results = []
-        for point in results.points:
-            payload = point.payload
-            
-            # 저장할 때 meta.type.value 로 저장했으므로, 다시 Enum 객체로 복원합니다.
-            intent_type = None
-            if payload.get("type"):
-                try:
-                    intent_type = IntentCategory(payload["type"])
-                except ValueError:
-                    # Enum에 없는 값일 경우를 대비한 안전 장치
-                    intent_type = payload["type"] 
-
-            # 메타데이터 객체 조립
-            metadata = ChunkMetaData(
-                chunk_id=payload.get("chunk_id"),
-                parent_id=payload.get("parent_id"),
-                file_path=payload.get("file_path"),
-                type=intent_type
-            )
-            
-            # 최종 Chunk 객체 조립 (검색 결과 반환용이므로 vector는 None으로 처리)
-            chunk = Chunk(
-                metadata=metadata,
-                payload=payload.get("text"),
-                vector=None 
-            )
-            
-            search_results.append(chunk)
-            
+        search_results = [self.payload_to_chunk(point.payload) for point in results.points]
         return search_results
     
     def get_stats(self) -> dict:
