@@ -13,7 +13,7 @@ from config import (
     LEARNING_RATE, WEIGHT_DECAY, EPOCHS, BATCH_SIZE,
     NCA_TEMPERATURE, T_MAX, PATIENCE, MODEL_SAVE_PATH,
 )
-from nca_rag.NCA_Adapter import NCANetwork, NCALoss
+from nca_rag.nca_adapter import NCAAdapter, NCALoss
 from trainer import NCATrainer
 
 
@@ -130,7 +130,7 @@ def main():
     )
 
     # ── 2. 모델 & 손실 함수 생성 ──
-    model = NCANetwork(
+    model = NCAAdapter(
         input_dim=INPUT_DIM,
         hidden_dim=HIDDEN_DIM,
         projection_dim=PROJECTION_DIM,
