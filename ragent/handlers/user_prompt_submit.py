@@ -7,6 +7,7 @@ import json
 
 from ragent.models.chunk import Chunk
 from ragent.modules.embedding_modules import HybridEmbedding
+from ragent.modules.retrieval_modules import Retriever
 from ragent.vectordb import QdrantStorage
 
 logger = logging.getLogger("ragent")
@@ -49,9 +50,9 @@ def handle(data: dict) -> None:
     
     embedder = HybridEmbedding()
     vectordb = QdrantStorage(os.path.basename(os.path.dirname(transcript_path)))
+    retriever = Retriever(vectordb, embedder)
 
-    query_vector = embedder.embed(prompt)
-    search_results = vectordb.hybrid_search(query_vector)
+    search_results = retriever.retrieve(prompt)
 
     if search_results:
         logger.info(f"Retrieved {len(search_results)} relevant chunks.")
