@@ -1,6 +1,46 @@
 from ragent.models.chunk import Chunk
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
+def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1, min_chunks: int = 1) -> list[Chunk]:
+    """
+    청크들의 유사도 점수 낙폭을 분석하여 연관성이 떨어지는 하위 청크들을 잘라낸다.
+    입력된 데이터는 내부적으로 점수 기준 내림차순 정렬을 적용한 뒤 컷오프를 수행한다.
+    
+    Args:
+        scored_chunks: (Chunk, 점수) 형태의 튜플 리스트.
+        drop_threshold: 이전 청크 대비 점수가 이 값보다 크게 떨어지면 컷오프를 실행한다. 기본값 0.1.
+        min_chunks: 점수 낙폭이 크더라도 무조건 결과에 포함시킬 최소 청크 개수. 기본값 1.
+        
+    Returns:
+        동적 컷오프 조건을 통과하여 살아남은 순수 Chunk 객체 리스트.
+    """
+    if not scored_chunks:
+        return []
+    
+    sorted_chunks = sorted(scored_chunks, key=lambda x: x[1], reverse=True)
+    
+    if len(sorted_chunks) <= min_chunks:
+        return [chunk for chunk, score in sorted_chunks]
+
+    filtered_chunks = [sorted_chunks[0][0]]
+
+    drop_detected = False
+    for i in range(1, len(sorted_chunks)):
+        current_score = sorted_chunks[i][1]
+        prev_score = sorted_chunks[i-1][1]
+        
+        drop = prev_score - current_score
+        
+        if drop > drop_threshold:
+            drop_detected = True
+        
+        if drop_detected and len(filtered_chunks) >= min_chunks:
+            break
+            
+        filtered_chunks.append(sorted_chunks[i][0])
+
+    return filtered_chunks
+
 class Retriever:
     def __init__(self, vectordb, embedder):
         self.vectordb = vectordb
