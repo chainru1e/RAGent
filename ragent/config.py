@@ -15,6 +15,8 @@ LOG_FILE = BASE_DIR / "ragent.log"
 EMBEDDING_MODEL = "BAAI/bge-m3"
 DENSE_SIZE = 1024
 
+RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
+
 def ensure_dirs() -> None:
     """Create required directories if they don't exist."""
     QDRANT_DIR.mkdir(parents=True, exist_ok=True)

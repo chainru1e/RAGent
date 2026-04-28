@@ -1,5 +1,7 @@
+from ragent.config import RERANKING_MODEL
 from ragent.models.chunk import Chunk
 from qdrant_client.models import Filter, FieldCondition, MatchValue
+from sentence_transformers import CrossEncoder
 
 def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1, min_chunks: int = 1) -> list[Chunk]:
     """
@@ -120,3 +122,33 @@ class MetadataExpander:
             }, 
             limit=50
         )
+    
+class Reranker:
+    """검색된 청크들을 Cross-Encoder 모델을 이용해 재평가하고 정렬하는 클래스"""
+    def __init__(self):
+        self.model = CrossEncoder(RERANKING_MODEL)
+
+    def rerank(self, query: str, chunks: list[Chunk]) -> list[tuple[Chunk, float]]:
+        """
+        주어진 쿼리를 기준으로 각 청크의 관련성 점수를 산출하고, 가장 연관성이 높은 순서대로 청크를 정렬한다.
+
+        Args:
+            query (str): 평가의 기준이 되는 대상 쿼리 또는 문장.
+            chunks (list[Chunk]): 유사도를 평가할 대상 청크 객체 리스트.
+
+        Returns:
+            list[tuple[Chunk, float]]: (Chunk, 점수) 형태의 튜플 리스트. 
+                                       점수가 높은 순으로 내림차순 정렬되어 반환된다.
+        """
+        if not chunks:
+            return []
+
+        pairs = [[query, chunk.payload or ""] for chunk in chunks]
+        
+        try:
+            scores = self.model.predict(pairs)
+        except Exception as e:
+            return [(chunk, 0.0) for chunk in chunks]
+
+        scored_chunks = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
+        return scored_chunks
