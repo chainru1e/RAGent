@@ -50,7 +50,7 @@ class Retriever:
 
     def retrieve(self, query: str) -> list[Chunk]:
         query_vector = self.embedder.embed(query)
-        search_results = self.vectordb.hybrid_search(query_vector=query_vector)
+        search_results = self.vectordb.staged_hybrid_search(query_vector=query_vector)
         
         return search_results
     

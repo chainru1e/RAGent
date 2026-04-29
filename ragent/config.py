@@ -13,7 +13,8 @@ QDRANT_DIR = BASE_DIR / "qdrant_storage"
 LOG_FILE = BASE_DIR / "ragent.log"
 
 EMBEDDING_MODEL = "BAAI/bge-m3"
-DENSE_SIZE = 1024
+SHORT_DENSE_SIZE = 256
+LONG_DENSE_SIZE = 1024
 
 RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
 
