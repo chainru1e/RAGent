@@ -44,15 +44,28 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
     return filtered_chunks
 
 class Retriever:
-    def __init__(self, vectordb, embedder):
+    def __init__(self, vectordb, embedder, reranker=None, expander=None):
         self.vectordb = vectordb
         self.embedder = embedder
+        self.reranker = reranker if reranker is not None else Reranker()
+        self.expander = expander if expander is not None else MetadataExpander(self.vectordb)
 
     def retrieve(self, query: str) -> list[Chunk]:
+        # 1. 초기 시드 검색
         query_vector = self.embedder.embed(query)
-        search_results = self.vectordb.staged_hybrid_search(query_vector=query_vector)
+        initial_chunks = self.vectordb.staged_hybrid_search(query_vector=query_vector)
         
-        return search_results
+        if not initial_chunks:
+            return []
+        
+        # 2. 시드 정제
+        reranked_initial_pairs = self.reranker.rerank(query, initial_chunks)
+        seed_chunks = cutoff(reranked_initial_pairs, drop_threshold=0.1, min_chunks=1)
+
+        # 3. 문맥 확장
+        final_chunks = self.expander.expand_chunks(seed_chunks)
+
+        return final_chunks
     
 class MetadataExpander:
     """검색된 청크의 메타데이터를 기반으로 추가적인 청크를 검색하는 클래스"""
