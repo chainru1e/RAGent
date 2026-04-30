@@ -123,6 +123,53 @@ class MetadataExpander:
             limit=50
         )
     
+    def expand_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
+        """
+        입력된 청크 리스트의 메타데이터를 기반으로 연관된 문맥을 조회하여 확장된 청크 리스트를 반환한다.
+        
+        Args:
+            chunks (list[Chunk]): 확장의 기준이 되는 초기 청크 리스트.
+            
+        Returns:
+            list[Chunk]: 원본 청크와 새롭게 추가된 청크들이 병합된 리스트.
+        """
+        if not chunks:
+            return []
+        
+        # 중복 방지를 위해 딕셔너리로 저장
+        final_context = {chunk.metadata.chunk_id: chunk for chunk in chunks}
+        
+        # 쿼리 최적화를 위한 set
+        expanded_parents = set()
+        expanded_files = set()
+        expanded_children = set()
+
+        for seed in chunks:
+            parent_id = seed.metadata.parent_id
+            if parent_id:                                           # 코드 청크
+                if parent_id not in expanded_parents:               # 부모 대화 확장
+                    parents = self.expand_to_parent(seed)
+                    for p in parents:
+                        final_context[p.metadata.chunk_id] = p
+                    expanded_parents.add(parent_id)
+                file_path = seed.metadata.file_path                 # 같은 파일 코드 확장
+                if file_path:
+                    file_context_key = (file_path, parent_id)
+                    if file_context_key not in expanded_files:
+                        same_files = self.expand_same_file(seed)
+                        for s in same_files:
+                            final_context[s.metadata.chunk_id] = s
+                        expanded_files.add(file_context_key)
+            else:                                                   # 컨텍스트 청크
+                chunk_id = seed.metadata.chunk_id                   # 자식 코드 확장
+                if chunk_id not in expanded_children:
+                    children = self.expand_to_children(seed)
+                    for c in children:
+                        final_context[c.metadata.chunk_id] = c
+                    expanded_children.add(chunk_id)
+        
+        return list(final_context.values())
+    
 class Reranker:
     """검색된 청크들을 Cross-Encoder 모델을 이용해 재평가하고 정렬하는 클래스"""
     def __init__(self):
