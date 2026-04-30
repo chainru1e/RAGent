@@ -18,7 +18,8 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, ConfigDict
 from dotenv import load_dotenv
-import google.generativeai as genai
+#import google.generativeai as genai
+import ollama
 
 
 # ================================================================
@@ -261,83 +262,114 @@ class RuleBasedClassifier:
 # Section 4: LLM 분류기 — Multi-label (Sigmoid) Prompt
 # ================================================================
 
-class LLMClassifier:
-    """
-    Google Gemini를 이용한 Multi-label 인텐트 분류기.
-    프롬프트에서 각 의도를 독립 판정하도록 지시하여
-    Softmax 제약(합=1) 없이 복합 의도를 포착한다.
-    """
+# class LLMClassifier:
+#     """
+#     Google Gemini를 이용한 Multi-label 인텐트 분류기.
+#     프롬프트에서 각 의도를 독립 판정하도록 지시하여
+#     Softmax 제약(합=1) 없이 복합 의도를 포착한다.
+#     """
 
-    def __init__(self, api_key: str):
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.1
-            }
-        )
+#     def __init__(self, api_key: str):
+#         genai.configure(api_key=api_key)
+#         self.model = genai.GenerativeModel(
+#             model_name="gemini-2.5-flash",
+#             generation_config={
+#                 "response_mime_type": "application/json",
+#                 "temperature": 0.1
+#             }
+#         )
+
+#     def classify(self, query: str) -> MultiLabelResult:
+#         """Gemini API를 호출하여 Multi-label 인텐트 분류"""
+
+#         prompt = f"""당신은 코딩 질문의 **다중 의도 분류기**입니다.
+
+# 사용자의 질문에는 여러 의도가 **동시에** 존재할 수 있습니다.
+# 아래 5가지 의도 각각에 대해 **독립적으로** 해당 확률(0.0~1.0)을 판정하세요.
+
+# - CODE_GENERATION  : 새로운 코드/함수/클래스/API 작성 요청
+# - CODE_REFACTORING : 기존 코드 개선, 최적화, 리팩토링 요청
+# - CODE_DEBUGGING   : 에러, 버그, 오류 해결 요청
+# - SIMPLE_QUESTION  : 프로그래밍 개념, 설명, 비교 질문
+# - NO_RAG           : 인사, 잡담, 감사 등 코딩과 무관한 대화
+
+# **중요 — Sigmoid 독립 판정 원칙**:
+# 각 점수는 서로 독립입니다. 합이 1이 될 필요가 없습니다.
+# 예) "이 코드 버그 고치고 더 빠르게 최적화해줘"
+#     → CODE_DEBUGGING=0.9, CODE_REFACTORING=0.85 동시에 높을 수 있음
+
+# 반드시 아래 JSON 형식으로만 응답하세요:
+# {{
+#   "intent_scores": {{
+#     "CODE_GENERATION": 0.0,
+#     "CODE_REFACTORING": 0.0,
+#     "CODE_DEBUGGING": 0.0,
+#     "SIMPLE_QUESTION": 0.0,
+#     "NO_RAG": 0.0
+#   }},
+#   "reasoning": "판단 이유"
+# }}
+
+# 사용자 질문: {query}"""
+
+#         try:
+#             response = self.model.generate_content(prompt)
+#             result = json.loads(response.text)
+
+#             scores = result["intent_scores"]
+#             scores = {k: round(float(v), 4) for k, v in scores.items()}
+
+#             active = [
+#                 k for k, v in scores.items()
+#                 if v >= 0.5
+#             ]
+
+#             return MultiLabelResult(
+#                 intent_scores=scores,
+#                 active_intents=active,
+#                 method="llm_based",
+#                 reasoning=result.get("reasoning", "Gemini 판단")
+#             )
+
+#         except Exception as e:
+#             fallback = {c.value: 0.0 for c in ALL_INTENTS}
+#             return MultiLabelResult(
+#                 intent_scores=fallback,
+#                 active_intents=[],
+#                 method="llm_based",
+#                 reasoning=f"Gemini API 오류: {str(e)}"
+#             )
+class LLMClassifier:
+    def __init__(self, model_name: str = "llama3"):
+        self.model_name = model_name  # 로컬에 설치된 모델명 (예: llama3, gemma2)
 
     def classify(self, query: str) -> MultiLabelResult:
-        """Gemini API를 호출하여 Multi-label 인텐트 분류"""
-
-        prompt = f"""당신은 코딩 질문의 **다중 의도 분류기**입니다.
-
-사용자의 질문에는 여러 의도가 **동시에** 존재할 수 있습니다.
-아래 5가지 의도 각각에 대해 **독립적으로** 해당 확률(0.0~1.0)을 판정하세요.
-
-- CODE_GENERATION  : 새로운 코드/함수/클래스/API 작성 요청
-- CODE_REFACTORING : 기존 코드 개선, 최적화, 리팩토링 요청
-- CODE_DEBUGGING   : 에러, 버그, 오류 해결 요청
-- SIMPLE_QUESTION  : 프로그래밍 개념, 설명, 비교 질문
-- NO_RAG           : 인사, 잡담, 감사 등 코딩과 무관한 대화
-
-**중요 — Sigmoid 독립 판정 원칙**:
-각 점수는 서로 독립입니다. 합이 1이 될 필요가 없습니다.
-예) "이 코드 버그 고치고 더 빠르게 최적화해줘"
-    → CODE_DEBUGGING=0.9, CODE_REFACTORING=0.85 동시에 높을 수 있음
-
-반드시 아래 JSON 형식으로만 응답하세요:
-{{
-  "intent_scores": {{
-    "CODE_GENERATION": 0.0,
-    "CODE_REFACTORING": 0.0,
-    "CODE_DEBUGGING": 0.0,
-    "SIMPLE_QUESTION": 0.0,
-    "NO_RAG": 0.0
-  }},
-  "reasoning": "판단 이유"
-}}
-
-사용자 질문: {query}"""
+        prompt = f"""사용자 질문의 의도를 분석하여 JSON으로 답하세요. 
+        의도: CODE_GENERATION, CODE_REFACTORING, CODE_DEBUGGING, SIMPLE_QUESTION, NO_RAG
+        형식: {{"intent_scores": {{"의도명": 0.0}}, "reasoning": "이유"}}
+        질문: {query}"""
 
         try:
-            response = self.model.generate_content(prompt)
-            result = json.loads(response.text)
-
-            scores = result["intent_scores"]
-            scores = {k: round(float(v), 4) for k, v in scores.items()}
-
-            active = [
-                k for k, v in scores.items()
-                if v >= 0.5
-            ]
+            # Ollama 로컬 호출 (format='json'으로 결과 강제)
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': prompt}],
+                format='json'
+            )
+            
+            result = json.loads(response['message']['content'])
+            scores = {k: round(float(v), 4) for k, v in result["intent_scores"].items()}
+            active = [k for k, v in scores.items() if v >= 0.5]
 
             return MultiLabelResult(
                 intent_scores=scores,
                 active_intents=active,
-                method="llm_based",
-                reasoning=result.get("reasoning", "Gemini 판단")
+                method=f"local_llm({self.model_name})",
+                reasoning=result.get("reasoning", "로컬 LLM 판단")
             )
-
         except Exception as e:
-            fallback = {c.value: 0.0 for c in ALL_INTENTS}
-            return MultiLabelResult(
-                intent_scores=fallback,
-                active_intents=[],
-                method="llm_based",
-                reasoning=f"Gemini API 오류: {str(e)}"
-            )
+            return MultiLabelResult(intent_scores={}, active_intents=[], method="error", reasoning=str(e))
+
 
 
 # ================================================================
@@ -366,31 +398,31 @@ class RAGPolicy:
 # Section 5: 하이브리드 분류기 — Multi-label
 # ================================================================
 
-class HybridClassifier:
-    """
-    Rule-Based(Sigmoid)를 먼저 시도하고,
-    활성 의도가 없거나 최대 확률이 낮으면 Gemini에게 위임하는
-    하이브리드 Multi-label 분류기.
-    """
+# class HybridClassifier:
+#     """
+#     Rule-Based(Sigmoid)를 먼저 시도하고,
+#     활성 의도가 없거나 최대 확률이 낮으면 Gemini에게 위임하는
+#     하이브리드 Multi-label 분류기.
+#     """
 
-    def __init__(self, api_key: str,
-                 rule_confidence_threshold: float = 0.6,
-                 activation_threshold: float = 0.5):
-        self.rule_classifier = RuleBasedClassifier(
-            activation_threshold=activation_threshold
-        )
-        self.llm_classifier = LLMClassifier(api_key=api_key)
-        self.rule_confidence_threshold = rule_confidence_threshold
+#     def __init__(self, api_key: str,
+#                  rule_confidence_threshold: float = 0.6,
+#                  activation_threshold: float = 0.5):
+#         self.rule_classifier = RuleBasedClassifier(
+#             activation_threshold=activation_threshold
+#         )
+#         self.llm_classifier = LLMClassifier(api_key=api_key)
+#         self.rule_confidence_threshold = rule_confidence_threshold
+
+class HybridClassifier:
+    def __init__(self, model_name: str = "llama3", rule_confidence_threshold: float = 0.6): 
+        # 1. 인자에 rule_confidence_threshold를 추가하고
+        self.rule_classifier = RuleBasedClassifier()
+        self.llm_classifier = LLMClassifier(model_name=model_name)
+        # 2. 아래와 같이 self에 저장해줘야 classify에서 쓸 수 있습니다.
+        self.rule_confidence_threshold = rule_confidence_threshold 
 
     def classify(self, query: str) -> MultiLabelResult:
-        """
-        하이브리드 Multi-label 분류 로직:
-        ─────────────────────────────────────────────
-        1단계: Rule-Based (Sigmoid) 분류
-               → 활성 의도 존재 + 최대 확률 ≥ threshold → 채택
-        2단계: 조건 미달 → Gemini LLM Multi-label 분류로 위임
-        """
-
         # ── 1단계: Rule-Based 먼저 ──
         rule_result = self.rule_classifier.classify(query)
 
@@ -399,13 +431,14 @@ class HybridClassifier:
             if rule_result.intent_scores else 0.0
         )
 
+        # 이제 self.rule_confidence_threshold를 정상적으로 참조합니다.
         if rule_result.active_intents and max_score >= self.rule_confidence_threshold:
             final_result = rule_result
         else:
-            # ── 2단계: Gemini LLM 호출 ──
+            # ── 2단계: 로컬 LLM 호출 ──
             final_result = self.llm_classifier.classify(query)
 
-        # ── 3단계: 정책(Policy)을 적용하여 RAG 제어 변수 주입 ──
+        # ── 3단계: 정책(Policy) 적용 ──
         retrieve, index = RAGPolicy.get_action(final_result.active_intents)
         final_result.should_retrieve = retrieve
         final_result.should_index = index
@@ -441,19 +474,22 @@ def smart_ask(query: str, classifier: HybridClassifier):
         
     return result
 
+# if __name__ == "__main__":
+#     load_dotenv()
+#     api_key = os.getenv("GEMINI_API_KEY")
+
+#     if not api_key:
+#         print("GEMINI_API_KEY가 설정되지 않았습니다.")
+#         sys.exit(1)
+
+#     classifier = HybridClassifier(
+#         api_key=api_key,
+#         rule_confidence_threshold=0.6,
+#         activation_threshold=0.5
+#     )
 if __name__ == "__main__":
-    load_dotenv()
-    api_key = os.getenv("GEMINI_API_KEY")
-
-    if not api_key:
-        print("GEMINI_API_KEY가 설정되지 않았습니다.")
-        sys.exit(1)
-
-    classifier = HybridClassifier(
-        api_key=api_key,
-        rule_confidence_threshold=0.6,
-        activation_threshold=0.5
-    )
+    # 로컬 LLM 환경이므로 API 키 설정 필요 없음
+    classifier = HybridClassifier(model_name="llama3")
 
     print("=" * 60)
     print(" Smart RAG Agent - Intent & Action Controller (종료: quit)")
