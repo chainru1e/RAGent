@@ -14,7 +14,10 @@ dependencies = [
     "qdrant-client",
     "torch",
     "google-generativeai",
-    "transformers==4.44.0"
+    "transformers==4.44.0",
+    "llama-cpp-python[server]",
+    "uvicorn",
+    "openai"
 ]
 
 [project.optional-dependencies]
