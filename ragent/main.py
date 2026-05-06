@@ -33,17 +33,9 @@ def run() -> None:
         event = data.get("hook_event_name", "")
         logger.info("Received event: %s", event)
 
-        if event == "UserPromptSubmit":
-            from ragent.handlers.user_prompt_submit import handle
-            handle(data)
-        elif event == "Stop":
-            from ragent.handlers.stop import handle
-            handle(data)
-        elif event == "SessionEnd":
-            from ragent.handlers.session_end import handle
-            handle(data)
-        else:
-            logger.warning("Unknown event: %s", event)
+        from ragent.adapters import get_adapter
+        adapter = get_adapter(None)
+        adapter.dispatch(data)
 
     except Exception:
         logger.exception("Unhandled error in ragent")
