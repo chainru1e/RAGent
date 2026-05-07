@@ -7,9 +7,11 @@ import os
 
 from ragent.adapters.base import BaseAdapter
 from ragent.adapters.claude_code import ClaudeCodeAdapter
+from ragent.adapters.codex import CodexAdapter
 
 ADAPTER_REGISTRY: dict[str, type[BaseAdapter]] = {
     "claude_code": ClaudeCodeAdapter,
+    "codex": CodexAdapter,
 }
 
 
@@ -32,4 +34,10 @@ def get_adapter(name: str | None) -> BaseAdapter:
     return cls()
 
 
-__all__ = ["ADAPTER_REGISTRY", "BaseAdapter", "ClaudeCodeAdapter", "get_adapter"]
+__all__ = [
+    "ADAPTER_REGISTRY",
+    "BaseAdapter",
+    "ClaudeCodeAdapter",
+    "CodexAdapter",
+    "get_adapter",
+]

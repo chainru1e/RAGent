@@ -32,6 +32,19 @@ class BaseAdapter(ABC):
         에이전트 고유의 hook 이름·스키마 해석은 이 메서드 안에서만 한다.
         """
 
+    @classmethod
+    @abstractmethod
+    def install(cls) -> None:
+        """이 어댑터에 해당하는 에이전트의 hook 시스템에 RAGent 호출을 등록한다.
+
+        각 어댑터는 자신의 에이전트가 사용하는 hook 설정 파일 위치, 스키마,
+        이벤트 이름을 알고 처리한다. 등록되는 hook 명령에는 환경변수
+        RAGENT_ADAPTER가 명시적으로 박혀 있어야 한다 — RAGent 시작 시점에
+        어떤 어댑터를 쓸지 결정하는 신호이기 때문이다.
+
+        멱등해야 한다 — 두 번 호출해도 hook이 중복 등록되지 않아야 한다.
+        """
+
     def dispatch(self, data: dict) -> None:
         """모든 어댑터 공통 라우팅. 오버라이드 금지(원칙적으로).
 
