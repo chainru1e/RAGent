@@ -44,11 +44,10 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
     return filtered_chunks
 
 class Retriever:
-    def __init__(self, vectordb, embedder, reranker=None, expander=None):
+    def __init__(self, vectordb, embedder, reranker=None):
         self.vectordb = vectordb
         self.embedder = embedder
         self.reranker = reranker if reranker is not None else Reranker()
-        self.expander = expander if expander is not None else MetadataExpander(self.vectordb)
 
     def retrieve(self, query: str) -> list[Chunk]:
         # 1. 초기 시드 검색
@@ -62,126 +61,7 @@ class Retriever:
         reranked_initial_pairs = self.reranker.rerank(query, initial_chunks)
         seed_chunks = cutoff(reranked_initial_pairs, drop_threshold=0.1, min_chunks=1)
 
-        # 3. 문맥 확장
-        final_chunks = self.expander.expand_chunks(seed_chunks)
-
-        return final_chunks
-    
-class MetadataExpander:
-    """검색된 청크의 메타데이터를 기반으로 추가적인 청크를 검색하는 클래스"""
-    def __init__(self, vectordb):
-        self.vectordb = vectordb
-
-    def _fetch_by_filter(self, conditions: dict, limit: int) -> list[Chunk]:
-        """
-        주어진 다중 메타데이터 조건을 모두 만족하는 청크들을 조회한다.
-        
-        Args:
-            conditions (dict): 검색에 사용할 메타데이터 키-값 쌍.
-                               값이 None인 키는 필터링 조건에서 자동으로 제외한다.
-            limit (int): 데이터베이스에서 스크롤하여 가져올 청크의 최대 개수.
-            
-        Returns:
-            list[Chunk]: 조건을 만족하며 역직렬화가 완료된 순수 Chunk 객체 리스트. 
-                         검색 결과가 없거나 통신 중 예외가 발생할 경우 빈 리스트([])를 반환한다.
-        """
-
-        # Qdrant 필터 생성
-        must_conditions = [
-            FieldCondition(key=k, match=MatchValue(value=v))
-            for k, v in conditions.items() if v is not None
-        ]
-        qdrant_filter = Filter(must=must_conditions)
-
-        # 메타데이터 기반 검색
-        try:
-            records, _ = self.vectordb.client.scroll(
-                collection_name=self.vectordb.collection_name,
-                scroll_filter=qdrant_filter,
-                limit=limit,
-                with_payload=True
-            )
-            return [self.vectordb.payload_to_chunk(record.payload) for record in records]
-            
-        except Exception:
-            return []
-
-    def expand_to_parent(self, chunk: Chunk) -> list[Chunk]:
-        """코드 -> 대화 텍스트"""
-        if not chunk.metadata.parent_id:
-            return []
-        return self._fetch_by_filter(conditions={"chunk_id": chunk.metadata.parent_id}, limit=1)
-
-    def expand_to_children(self, chunk: Chunk) -> list[Chunk]:
-        """대화 텍스트 -> 소속된 코드들"""
-        if not chunk.metadata.chunk_id:
-            return []
-        return self._fetch_by_filter(conditions={"parent_id": chunk.metadata.chunk_id}, limit=50)
-    
-    def expand_to_siblings(self, chunk: Chunk) -> list[Chunk]:
-        """코드 -> 같은 대화를 공유하는 다른 코드들"""
-        siblings = self._fetch_by_filter(conditions={"parent_id": chunk.metadata.parent_id}, limit=50)
-        # 자기 자신 제외
-        return [sib for sib in siblings if sib.metadata.chunk_id != chunk.metadata.chunk_id]
-    
-    def expand_same_file(self, chunk: Chunk) -> list[Chunk]:
-        """코드 -> 같은 파일의 전체 코드"""
-        if not chunk.metadata.file_path or not chunk.metadata.parent_id:
-            return []
-        return self._fetch_by_filter(
-            conditions={
-                "file_path": chunk.metadata.file_path,
-                "parent_id": chunk.metadata.parent_id
-            }, 
-            limit=50
-        )
-    
-    def expand_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
-        """
-        입력된 청크 리스트의 메타데이터를 기반으로 연관된 문맥을 조회하여 확장된 청크 리스트를 반환한다.
-        
-        Args:
-            chunks (list[Chunk]): 확장의 기준이 되는 초기 청크 리스트.
-            
-        Returns:
-            list[Chunk]: 원본 청크와 새롭게 추가된 청크들이 병합된 리스트.
-        """
-        if not chunks:
-            return []
-        
-        # 중복 방지를 위해 딕셔너리로 저장
-        final_context = {chunk.metadata.chunk_id: chunk for chunk in chunks}
-        
-        # 쿼리 최적화를 위한 set
-        expanded_parents = set()
-        expanded_files = set()
-        expanded_children = set()
-
-        for seed in chunks:
-            parent_id = seed.metadata.parent_id
-            if parent_id:                                           # 코드 청크
-                if parent_id not in expanded_parents:               # 부모 대화 확장
-                    parents = self.expand_to_parent(seed)
-                    for p in parents:
-                        final_context[p.metadata.chunk_id] = p
-                    expanded_parents.add(parent_id)
-                file_path = seed.metadata.file_path                 # 같은 파일 코드 확장
-                if file_path:
-                    file_context_key = (file_path, parent_id)
-                    if file_context_key not in expanded_files:
-                        same_files = self.expand_same_file(seed)
-                        for s in same_files:
-                            final_context[s.metadata.chunk_id] = s
-                        expanded_files.add(file_context_key)
-            else:                                                   # 컨텍스트 청크
-                chunk_id = seed.metadata.chunk_id                   # 자식 코드 확장
-                if chunk_id not in expanded_children:
-                    children = self.expand_to_children(seed)
-                    for c in children:
-                        final_context[c.metadata.chunk_id] = c
-                    expanded_children.add(chunk_id)
-        
-        return list(final_context.values())
+        return seed_chunks
     
 class Reranker:
     """검색된 청크들을 Cross-Encoder 모델을 이용해 재평가하고 정렬하는 클래스"""
