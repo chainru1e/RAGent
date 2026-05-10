@@ -12,6 +12,17 @@ from abc import ABC, abstractmethod
 class BaseAdapter(ABC):
     """모든 에이전트 어댑터의 추상 베이스."""
 
+    parser_class: type | None = None
+    """이 어댑터의 transcript 를 처리할 BaseParser 서브클래스.
+
+    어댑터는 hook 책임만 가지고 transcript 파싱 책임은 parser_class 에
+    위임한다. 파싱 불가능한 어댑터(예: 미구현 stub) 는 None.
+
+    타입을 type[BaseParser] 로 좁히지 않는 이유는 BaseAdapter 가 BaseParser 를
+    직접 import 하면 순환 의존이 생길 수 있기 때문 — 각 어댑터 서브클래스가
+    자기 parser 모듈을 import 해서 등록한다.
+    """
+
     @abstractmethod
     def on_prompt(self, data: dict) -> None:
         """사용자 프롬프트가 들어올 때 호출. 검색 결과를 stdout JSON으로 출력하는 책임은 구현체에 있다."""

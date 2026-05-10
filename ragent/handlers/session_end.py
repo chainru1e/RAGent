@@ -1,18 +1,16 @@
 """Handler for SessionEnd hook event.
 
-Parses the entire Claude Code transcript JSONL and upserts every genuine
-user/assistant turn to Qdrant. Acts as full recovery for any turns that
-the Stop handler missed. Idempotent within a process: chunk_ids are
-overridden with deterministic values derived from session_id + turn index
-so re-running on the same transcript hits Qdrant upsert without
-duplicating points.
+Parses the entire transcript JSONL via the active adapter's parser_class and
+upserts every genuine user/assistant turn to Qdrant. Acts as full recovery for
+any turns that the Stop handler missed. Idempotent within a process: chunk_ids
+are overridden with deterministic values derived from session_id + turn index
+so re-running on the same transcript hits Qdrant upsert without duplicating
+points.
 """
 
-import json
 import logging
 import os
 
-from ragent.modules.parsing_modules import MessageParser
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.intent_classifying_modules import HybridClassifier
 from ragent.modules.embedding_modules import HybridEmbedding
@@ -20,21 +18,6 @@ from ragent.vectordb import QdrantStorage
 from ragent.config import GEMINI_API_KEY
 
 logger = logging.getLogger("ragent")
-
-
-def _is_tool_result_entry(line_data: dict) -> bool:
-    msg = line_data.get("message")
-    if not isinstance(msg, dict):
-        return False
-    if msg.get("role") != "user":
-        return False
-    content = msg.get("content")
-    if not isinstance(content, list):
-        return False
-    return any(
-        isinstance(b, dict) and b.get("type") == "tool_result"
-        for b in content
-    )
 
 
 def handle(data: dict) -> None:
@@ -58,58 +41,26 @@ def handle(data: dict) -> None:
         logger.warning("SessionEnd: transcript not found at %s", transcript_path)
         return
 
-    parser = MessageParser(transcript_path)
-
-    messages: list[dict] = []
-    try:
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    line_data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if _is_tool_result_entry(line_data):
-                    continue
-                try:
-                    msg = parser._parse_line(line_data)
-                except Exception:
-                    continue
-                if msg:
-                    messages.append(msg)
-    except OSError as e:
-        logger.warning("SessionEnd: failed to read transcript %s: %s", transcript_path, e)
+    from ragent.adapters import get_adapter
+    adapter_cls = type(get_adapter(None))
+    if adapter_cls.parser_class is None:
+        logger.warning(
+            "SessionEnd: %s has no parser_class, skipping", adapter_cls.__name__
+        )
         return
 
-    if not messages:
+    parser = adapter_cls.parser_class(transcript_path)
+    turns = parser.parse_full_transcript()
+
+    if not turns:
         logger.warning("SessionEnd: no parsable messages in %s", transcript_path)
         return
 
-    turns: list[list[dict]] = []
-    current: list[dict] = []
-    for msg in messages:
-        is_turn_start = (
-            msg.get("role") == "user"
-            and msg.get("content", "").startswith("[text]")
-        )
-        if is_turn_start:
-            if current:
-                turns.append(current)
-            current = [msg]
-        elif current:
-            current.append(msg)
-    if current:
-        turns.append(current)
-
+    total_messages = sum(len(t) for t in turns)
     logger.info(
         "SessionEnd: parsed %d messages into %d turns from %s",
-        len(messages), len(turns), transcript_path,
+        total_messages, len(turns), transcript_path,
     )
-
-    if not turns:
-        return
 
     chunker = Chunker()
     intent_classifier = HybridClassifier(GEMINI_API_KEY)
@@ -119,7 +70,8 @@ def handle(data: dict) -> None:
     try:
         all_chunks = []
         for turn_idx, turn in enumerate(turns):
-            chunks = chunker.process_turn(turn)
+            turn_dicts = [{"role": m.role, "content": m.content} for m in turn]
+            chunks = chunker.process_turn(turn_dicts)
             if not chunks:
                 continue
             # Chunker가 부여한 UUID 기반 chunk_id를 결정적 ID로 덮어써,

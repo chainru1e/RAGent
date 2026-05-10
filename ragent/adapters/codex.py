@@ -16,6 +16,8 @@ from ragent.adapters.base import BaseAdapter
 class CodexAdapter(BaseAdapter):
     """Codex hook 입력을 정규화 이벤트로 매핑할 예정인 stub 어댑터."""
 
+    parser_class = None  # TODO: CodexParser 미구현 (Phase 6 예정)
+
     def _resolve_event_kind(self, data: dict) -> str:
         # TODO: Codex hook 시스템 명세 미조사. 명세 확정 후 매핑 표 작성:
         # - Codex의 user prompt 도착 이벤트 이름 → "prompt"

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from ragent.adapters.base import BaseAdapter
+from ragent.modules.parsing.claude_code import ClaudeCodeParser
 
 _SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 _RAGENT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -17,6 +18,8 @@ _RAGENT_DIR = Path(__file__).resolve().parent.parent.parent
 
 class ClaudeCodeAdapter(BaseAdapter):
     """Claude Code hook 입력을 정규화 이벤트로 매핑하고 handler에 위임한다."""
+
+    parser_class = ClaudeCodeParser
 
     def _resolve_event_kind(self, data: dict) -> str:
         event = data.get("hook_event_name", "")
