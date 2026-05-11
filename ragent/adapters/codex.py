@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 from ragent.adapters.base import BaseAdapter
-from ragent.modules.parsing.codex import CodexParser
+from ragent.modules.parsing_modules import CodexParser
 
 _HOOKS_PATH = Path.home() / ".codex" / "hooks.json"
 _RAGENT_DIR = Path(__file__).resolve().parent.parent.parent

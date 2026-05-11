@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from ragent.adapters.base import BaseAdapter
-from ragent.modules.parsing.claude_code import ClaudeCodeParser
+from ragent.modules.parsing_modules import ClaudeCodeParser
 
 _SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 _RAGENT_DIR = Path(__file__).resolve().parent.parent.parent
