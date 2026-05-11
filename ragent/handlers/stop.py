@@ -54,8 +54,7 @@ def handle(data: dict) -> None:
         logger.warning("Stop: no turns found in transcript %s", transcript_path)
         return
 
-    turn_dicts = [{"role": m.role, "content": m.content} for m in last_turn]
-    chunks = chunker.process_turn(turn_dicts)
+    chunks = chunker.process_turn(last_turn)
 
     context_chunk = next((chunk for chunk in chunks if chunk.metadata.chunk_id), None)
     if not context_chunk:

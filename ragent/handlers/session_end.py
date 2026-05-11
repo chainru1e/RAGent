@@ -70,8 +70,7 @@ def handle(data: dict) -> None:
     try:
         all_chunks = []
         for turn_idx, turn in enumerate(turns):
-            turn_dicts = [{"role": m.role, "content": m.content} for m in turn]
-            chunks = chunker.process_turn(turn_dicts)
+            chunks = chunker.process_turn(turn)
             if not chunks:
                 continue
             # Chunker가 부여한 UUID 기반 chunk_id를 결정적 ID로 덮어써,
