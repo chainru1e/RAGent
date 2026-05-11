@@ -4,6 +4,7 @@ import copy
 import uuid
 
 from ragent.models.chunk import Chunk, ChunkMetaData
+from ragent.models.parsed_message import NormalizedMessage
 
 # =====================================================================
 # [ ASTChunkBuilder 지원 언어 추가 가이드 (예: C++) ]
@@ -90,7 +91,7 @@ class Chunker:
             
         return self.builders_cache[language]
     
-    def _extract_turn_components(self, turn_data: list[dict]) -> tuple[Chunk, list[Chunk]]:
+    def _extract_turn_components(self, turn_data: list[NormalizedMessage]) -> tuple[Chunk, list[Chunk]]:
         """
         하나의 대화 턴에서 문맥 텍스트와 코드 블록을 분리 추출하고, 이를 `Chunk` 객체로 포장한다.
 
@@ -108,8 +109,8 @@ class Chunker:
         - 루프 종료 후, context_text 또한 `ChunkMetadata`가 부여된 단일 `Chunk`객체로 조립된다.
 
         Args:
-            turn_data (list[dict]): 한 턴에 속한 메시지 딕셔너리 목록.
-                각 원소는 보통 role, content 키를 가진다.
+            turn_data (list[NormalizedMessage]): 한 턴에 속한 정규화 메시지 객체 목록.
+                각 원소는 role, content 속성을 가진다.
 
         Returns:
            context_chunk,code_chunks (tuple[chunk,list[chunk]]):
@@ -125,8 +126,8 @@ class Chunker:
         id = str(uuid.uuid4())
 
         for msg in turn_data:
-            role = msg.get("role", "unknown").upper() # USER 또는 ASSISTANT
-            content = msg.get("content", "").strip()
+            role = msg.role.upper() # USER 또는 ASSISTANT
+            content = msg.content.strip()
 
             if content.startswith("[text]"):
                 pure_text = content.replace("[text]", "", 1).strip()
@@ -190,7 +191,7 @@ class Chunker:
         
         return refined_chunks
 
-    def process_turn(self, turn_data: list[dict]) -> list[Chunk]:
+    def process_turn(self, turn_data: list[NormalizedMessage]) -> list[Chunk]:
         """
         단일 대화 턴 데이터를 청킹하여 Chunk 리스트를 반환한다.
 
@@ -204,7 +205,7 @@ class Chunker:
            단일 맥락 청크 1개와 세분화된 코드 청크들을 하나의 리스트로 묶어 즉시 반환한다.
 
         Args:
-            turn_data (list[dict]): 파서를 통해 추출된 1턴 분량의 메시지 딕셔너리 리스트.
+            turn_data (list[NormalizedMessage]): 파서를 통해 추출된 1턴 분량의 정규화 메시지 객체 리스트.
 
         Returns:
             list[Chunk]: 처리가 완료된 최종 Chunk 객체들의 리스트. 

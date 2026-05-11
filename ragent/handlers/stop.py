@@ -7,7 +7,6 @@ and indexes the Q&A pair in ChromaDB.
 import logging
 import os
 
-from ragent.modules.parsing_modules import *
 from ragent.modules.chunking_modules import *
 from ragent.modules.intent_classifying_modules import *
 from ragent.modules.embedding_modules import *
@@ -35,7 +34,15 @@ def handle(data: dict) -> None:
         logger.warning("Stop: missing transcript_path")
         return
 
-    parser = MessageParser(transcript_path)
+    from ragent.adapters import get_adapter
+    adapter_cls = type(get_adapter(None))
+    if adapter_cls.parser_class is None:
+        logger.warning(
+            "Stop: %s has no parser_class, skipping", adapter_cls.__name__
+        )
+        return
+
+    parser = adapter_cls.parser_class(transcript_path)
     chunker = Chunker()
     intent_classifier = HybridClassifier(GEMINI_API_KEY)
     embedder = HybridEmbedding()
