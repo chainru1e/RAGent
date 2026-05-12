@@ -44,7 +44,7 @@ class QdrantStorage:
         vector = chunk.vector  # HybridVector
 
         point = PointStruct(
-            id=self._string_to_id(meta.chunk_id),
+            id=meta.chunk_id,
             vector={
                 "dense_short": vector.dense[:SHORT_DENSE_SIZE].tolist(),
                 "dense_long": vector.dense.tolist(),
@@ -70,7 +70,7 @@ class QdrantStorage:
 
             points.append(
                 PointStruct(
-                    id=self._string_to_id(meta.chunk_id),
+                    id=meta.chunk_id,
                     vector={
                         "dense_short": vector.dense[:SHORT_DENSE_SIZE].tolist(),
                         "dense_long": vector.dense.tolist(),
@@ -177,9 +177,6 @@ class QdrantStorage:
                 "collection": self.collection_name,
                 "error": str(e)
             }
-        
-    def _string_to_id(self, s: str) -> int:
-        return int(hash(s) & 0x7FFFFFFF)
     
     def close(self):
         self.client.close()
