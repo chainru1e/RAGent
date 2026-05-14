@@ -1,9 +1,9 @@
 """Transcript 파서 모듈.
 
 각 어댑터(Claude Code, Codex, ...) 의 transcript 한 줄 스키마를
-NormalizedMessage 로 번역하는 파서들을 한 파일에 모은 모듈이다. 메시지 스트림
-위에서 도는 알고리즘(역순 1턴 추출, 전체 transcript turn 그룹핑) 은 모든
-파서가 공유하는 Template Method 로 BaseParser 에 둔다.
+NormalizedMessage 로 번역하는 파서들을 한 파일에 모은 모듈이다. 역순으로
+가장 최근 1턴을 뽑는 알고리즘은 모든 파서가 공유하는 Template Method 로
+BaseParser 에 둔다.
 
 향후 GeminiCliParser 등 새로운 어댑터용 파서가 추가될 경우 동일한 BaseParser
 를 상속하여 본 파일에 함께 정의한다.
@@ -24,9 +24,8 @@ class BaseParser(ABC):
     """Transcript 파서 추상 베이스.
 
     각 어댑터(Claude Code, Codex, ...) 는 자신의 transcript 한 줄 스키마를
-    NormalizedMessage 로 번역하는 서브클래스를 제공한다. 메시지 스트림 위에서
-    도는 알고리즘(역순 1턴 추출, 전체 transcript turn 그룹핑)은 모든 파서가
-    공유하는 Template Method 로 이 베이스에 둔다.
+    NormalizedMessage 로 번역하는 서브클래스를 제공한다. 역순 1턴 추출
+    알고리즘은 모든 파서가 공유하는 Template Method 로 이 베이스에 둔다.
     """
 
     def __init__(self, transcript_path: str):
@@ -39,18 +38,6 @@ class BaseParser(ABC):
         형식이 안 맞거나 RAGent 가 의미 있는 메시지로 해석하지 않는 줄(예: 시스템
         이벤트, 빈 본문) 은 None 을 반환한다.
         """
-
-    def _should_skip_line(self, json_line: dict) -> bool:
-        """parse_full_transcript 에서 raw 줄 단위로 호출되는 사전 필터 훅.
-
-        parse_transcript_line 호출 이전에 줄을 통째로 버려야 하는 경우 True 를
-        반환하도록 서브클래스가 오버라이드한다. 기본은 필터링하지 않음.
-
-        parse_last_turn 은 이 훅을 호출하지 않는다 — 기존 parsing_modules.py 의
-        역순 탐색이 tool_result 같은 줄도 turn 에 포함시켰던 동작을 그대로
-        보존하기 위함.
-        """
-        return False
 
     def parse_last_turn(self) -> list[NormalizedMessage]:
         """Transcript 를 역순으로 읽어 가장 최근의 1턴을 추출한다.
@@ -95,57 +82,6 @@ class BaseParser(ABC):
         turn.reverse()
         return turn
 
-    def parse_full_transcript(self) -> list[list[NormalizedMessage]]:
-        """Transcript 전체를 정방향으로 읽어 turn 단위로 그룹핑하여 반환한다.
-
-        각 turn 은 user '[text]' 메시지를 시작점으로 갖고, 다음 user '[text]'
-        직전까지의 메시지들을 모은다. 첫 user '[text]' 이전의 메시지(있다면) 는
-        어떤 turn 에도 속하지 않으므로 결과에 포함되지 않는다 — 기존
-        session_end 인라인 로직과 동일한 동작.
-        """
-        if not os.path.exists(self.transcript_path):
-            return []
-
-        messages: list[NormalizedMessage] = []
-        try:
-            with open(self.transcript_path, "r", encoding="utf-8") as f:
-                for raw_line in f:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    try:
-                        line_data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if self._should_skip_line(line_data):
-                        continue
-                    try:
-                        msg = self.parse_transcript_line(line_data)
-                    except Exception:
-                        continue
-                    if msg:
-                        messages.append(msg)
-        except OSError:
-            return []
-
-        turns: list[list[NormalizedMessage]] = []
-        current: list[NormalizedMessage] = []
-        for msg in messages:
-            is_turn_start = (
-                msg.role == "user"
-                and msg.content.startswith("[text]")
-            )
-            if is_turn_start:
-                if current:
-                    turns.append(current)
-                current = [msg]
-            elif current:
-                current.append(msg)
-        if current:
-            turns.append(current)
-
-        return turns
-
 
 class ClaudeCodeParser(BaseParser):
     """Claude Code transcript JSONL 파서.
@@ -153,10 +89,6 @@ class ClaudeCodeParser(BaseParser):
     형식: 각 줄은 대략 다음과 같은 JSON 객체.
         {"message": {"role": ..., "content": ... or [...]}, "timestamp": ...}
     'message' 키가 없는 줄(시스템 이벤트) 은 무시한다.
-
-    본 파서는 Phase 5 이전 ragent/modules/parsing_modules.py 의 _parse_line 로직과
-    ragent/handlers/session_end.py 의 _is_tool_result_entry 헬퍼를 그대로
-    이식한 것이다 — 동작이 1바이트도 달라지면 안 된다.
     """
 
     def parse_transcript_line(self, json_line: dict) -> NormalizedMessage | None:
@@ -219,27 +151,6 @@ class ClaudeCodeParser(BaseParser):
                 timestamp=timestamp,
             )
         return None
-
-    def _should_skip_line(self, json_line: dict) -> bool:
-        # parse_full_transcript 경로에서만 호출되어 tool_result-only user 엔트리를
-        # 줄 단위로 통째로 버린다. parse_last_turn 은 이 훅을 호출하지 않으므로
-        # 기존 stop.py 동작은 영향받지 않는다.
-        return self._is_tool_result_entry(json_line)
-
-    @staticmethod
-    def _is_tool_result_entry(line_data: dict) -> bool:
-        msg = line_data.get("message")
-        if not isinstance(msg, dict):
-            return False
-        if msg.get("role") != "user":
-            return False
-        content = msg.get("content")
-        if not isinstance(content, list):
-            return False
-        return any(
-            isinstance(b, dict) and b.get("type") == "tool_result"
-            for b in content
-        )
 
 
 class CodexParser(BaseParser):
@@ -336,20 +247,6 @@ class CodexParser(BaseParser):
             return self._wrap("assistant", text_content, timestamp)
 
         return None
-
-    def _should_skip_line(self, json_line: dict) -> bool:
-        # function_call_output 줄은 본문이 매우 클 수 있어 (긴 명령 출력, 대용량 파일
-        # 읽기 결과 등) parse_full_transcript 에서 통째로 스킵한다. ClaudeCodeParser
-        # 가 user-only-tool_result 줄을 _is_tool_result_entry 로 거르는 것과 같은
-        # 동기. parse_last_turn 은 이 훅을 호출하지 않으므로 stop.py 처리 시점에
-        # 가장 최근 tool_result 가 보존되는 동작은 ClaudeCodeParser 와 동일하게
-        # 유지된다.
-        if json_line.get("type") != "response_item":
-            return False
-        payload = json_line.get("payload") or {}
-        if not isinstance(payload, dict):
-            return False
-        return payload.get("type") == "function_call_output"
 
     @staticmethod
     def _render_message_content(content) -> str:
