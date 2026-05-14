@@ -302,3 +302,77 @@ class CodexParser(BaseParser):
             content=text_content.strip(),
             timestamp=timestamp,
         )
+
+
+class WindsurfParser(BaseParser):
+    """Windsurf (Cognition Cascade) transcript JSONL 파서.
+
+    형식: 각 줄은 {"type": "...", "status": "...", <type-specific>: {...}} envelope.
+    위치: ~/.windsurf/transcripts/{trajectory_id}.jsonl 또는 hook payload 의
+    post_cascade_response_with_transcript.tool_info.transcript_path 가 절대 경로
+    제공.
+
+    공식 docs (https://docs.windsurf.com/windsurf/cascade/hooks) 가 공개한 step
+    type 은 3개뿐이며, "the exact structure of each step may change in future
+    versions" 라는 명시적 경고가 함께 붙어 있다. 따라서 본 파서는 공개된 3개만
+    정규화하고 그 외 9개 hook 이벤트 (read_code/run_command/mcp_tool_use 등)
+    에 대응하는 미공개 type 은 모두 None 반환 — 추측 매핑 금지.
+
+    공개된 type 매핑:
+    - user_input.user_response          : 사용자 본문   → role=user,     "[text]\\n<text>"
+    - planner_response.response         : 어시스턴트 본문 → role=assistant, "[text]\\n<text>"
+    - code_action.{path, new_content}   : 파일 작성       → role=assistant, "[code_action]\\n<path>\\n<new_content>"
+
+    chunker 호환성: code_action 의 prefix tag 는 "[code_action]" 으로 부여한다.
+    Claude Code 의 "[Write]" 리터럴과 비호환이므로 chunker 의 [Write] 매칭은
+    발화하지 않음 — 코드 청크 인덱싱은 미작동 (Codex 의 apply_patch 와 동일
+    함정). 추측으로 [Write] 마킹 강행하지 않음.
+
+    parse_last_turn 은 BaseParser 의 Template Method 를 그대로 사용한다 —
+    user '[text]' 메시지를 turn 시작점으로 보는 동일 규칙. parse_full_transcript
+    는 커밋 8806cff 에서 BaseParser 에서 제거됐으므로 본 파서도 호출 경로 없음.
+    """
+
+    def parse_transcript_line(self, json_line: dict) -> NormalizedMessage | None:
+        line_type = json_line.get("type")
+        timestamp = json_line.get("timestamp")
+
+        if line_type == "user_input":
+            payload = json_line.get("user_input") or {}
+            if not isinstance(payload, dict):
+                return None
+            text = payload.get("user_response", "")
+            if not text:
+                return None
+            return NormalizedMessage(
+                role="user",
+                content=f"[text]\n{text}",
+                timestamp=timestamp,
+            )
+
+        if line_type == "planner_response":
+            payload = json_line.get("planner_response") or {}
+            if not isinstance(payload, dict):
+                return None
+            text = payload.get("response", "")
+            if not text:
+                return None
+            return NormalizedMessage(
+                role="assistant",
+                content=f"[text]\n{text}",
+                timestamp=timestamp,
+            )
+
+        if line_type == "code_action":
+            payload = json_line.get("code_action") or {}
+            if not isinstance(payload, dict):
+                return None
+            path = payload.get("path", "")
+            new_content = payload.get("new_content", "")
+            return NormalizedMessage(
+                role="assistant",
+                content=f"[code_action]\n{path}\n{new_content}",
+                timestamp=timestamp,
+            )
+
+        return None

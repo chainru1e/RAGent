@@ -8,10 +8,12 @@ import os
 from ragent.adapters.base import BaseAdapter
 from ragent.adapters.claude_code import ClaudeCodeAdapter
 from ragent.adapters.codex import CodexAdapter
+from ragent.adapters.windsurf import WindsurfAdapter
 
 ADAPTER_REGISTRY: dict[str, type[BaseAdapter]] = {
     "claude_code": ClaudeCodeAdapter,
     "codex": CodexAdapter,
+    "windsurf": WindsurfAdapter,
 }
 
 
@@ -39,5 +41,6 @@ __all__ = [
     "BaseAdapter",
     "ClaudeCodeAdapter",
     "CodexAdapter",
+    "WindsurfAdapter",
     "get_adapter",
 ]
