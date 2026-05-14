@@ -1,43 +1,43 @@
 # RAGent
 
+> ⚠️ 본 README는 ChromaDB 시대 문서가 부분적으로 남아있어 현 구현(Qdrant 기반)과 일부 불일치합니다. 별도 작업으로 일괄 갱신 예정입니다.
+
 Claude Code의 대화 내역을 자동으로 벡터 데이터베이스에 저장하고, 이후 유사한 과거 대화를 검색할 수 있게 하는 RAG(Retrieval-Augmented Generation) 기반 인덱서입니다. Claude Code hooks 시스템과 연동되어 사용자가 의식하지 않아도 모든 대화가 자동으로 수집·색인됩니다.
 
 ---
 
 ## 아키텍처
 
-RAGent는 Claude Code의 3가지 hook 시점에 개입하여 대화 데이터를 수집합니다.
+RAGent는 Claude Code의 2가지 hook 시점에 개입하여 대화 데이터를 수집합니다.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Claude Code Session                         │
 └─────────────────────────────────────────────────────────────────────┘
-        │                         │                         │
-        ▼                         ▼                         ▼
- ┌──────────────┐         ┌──────────────┐         ┌──────────────────┐
- │ UserPrompt   │         │    Stop      │         │   SessionEnd     │
- │ Submit       │         │              │         │                  │
- │ (timeout 5s) │         │ (timeout 600s│         │ (timeout 600s)   │
- └──────┬───────┘         └──────┬───────┘         └────────┬─────────┘
-        │                        │                          │
-        ▼                        ▼                          ▼
- ┌──────────────┐         ┌──────────────┐         ┌──────────────────┐
- │ 프롬프트를   │         │ pending +    │         │ 전체 transcript  │
- │ pending/에   │         │ transcript → │         │ 파싱 → 모든 Q&A  │
- │ 임시 저장    │         │ Q&A 1쌍 색인 │         │ upsert + 세션    │
- │              │         │              │         │ 요약 생성·색인   │
- └──────┬───────┘         └──────┬───────┘         └────────┬─────────┘
-        │                        │                          │
-        ▼                        ▼                          ▼
- ~/.ragent/pending/       ~/.ragent/chroma_db/       ~/.ragent/chroma_db/
-   {session}.json         ├─ qa_pairs (컬렉션)       ├─ qa_pairs (upsert)
-                          └─ (1쌍 인덱싱)            └─ session_summaries
+        │                                       │
+        ▼                                       ▼
+ ┌──────────────┐                       ┌──────────────┐
+ │ UserPrompt   │                       │    Stop      │
+ │ Submit       │                       │              │
+ │ (timeout 5s) │                       │ (timeout 600s│
+ └──────┬───────┘                       └──────┬───────┘
+        │                                      │
+        ▼                                      ▼
+ ┌──────────────┐                       ┌──────────────┐
+ │ 프롬프트를   │                       │ pending +    │
+ │ pending/에   │                       │ transcript → │
+ │ 임시 저장    │                       │ Q&A 1쌍 색인 │
+ └──────┬───────┘                       └──────┬───────┘
+        │                                      │
+        ▼                                      ▼
+ ~/.ragent/pending/                     ~/.ragent/chroma_db/
+   {session}.json                       ├─ qa_pairs (컬렉션)
+                                        └─ (1쌍 인덱싱)
 ```
 
 **데이터 흐름 요약:**
 1. **UserPromptSubmit** — 사용자가 프롬프트를 제출하면, 응답이 오기 전에 프롬프트를 `~/.ragent/pending/`에 임시 저장합니다.
 2. **Stop** — Claude가 응답을 완료하면, 임시 저장된 프롬프트와 transcript의 마지막 응답을 짝지어 ChromaDB에 색인합니다.
-3. **SessionEnd** — 세션이 종료되면, 전체 transcript를 파싱하여 모든 Q&A 쌍을 upsert하고, 세션 요약을 생성·색인합니다.
 
 ---
 
@@ -58,8 +58,7 @@ RAGent/
 │   └── handlers/
 │       ├── __init__.py                # 패키지 마커
 │       ├── user_prompt_submit.py      # UserPromptSubmit 이벤트 핸들러
-│       ├── stop.py                    # Stop 이벤트 핸들러
-│       └── session_end.py             # SessionEnd 이벤트 핸들러
+│       └── stop.py                    # Stop 이벤트 핸들러
 └── tests/
     ├── __init__.py
     ├── test_transcript.py             # transcript 파싱 테스트 (9개 케이스)
@@ -185,13 +184,6 @@ Claude Code가 생성하는 JSONL transcript 파일을 파싱하여 `Turn` 객�
 5. `RAGentDB().index_qa_pair()` 호출하여 색인
 6. pending 파일 삭제
 
-#### `session_end.py`
-1. `parse_transcript()`로 전체 transcript 파싱
-2. 모든 Q&A 쌍을 `index_qa_pair()`로 upsert (Stop이 놓친 것까지 보완)
-3. `get_session_summary_text()`로 세션 요약 생성
-4. `index_session_summary()`로 요약 색인
-5. pending 파일 정리
-
 ### `main.py` — 디스패처
 
 stdin에서 JSON을 읽고, `hook_event_name` 필드를 기준으로 적절한 핸들러를 호출합니다.
@@ -200,7 +192,6 @@ stdin에서 JSON을 읽고, `hook_event_name` 필드를 기준으로 적절한 �
 stdin JSON → json.loads() → hook_event_name 분기
   ├── "UserPromptSubmit" → handlers/user_prompt_submit.handle()
   ├── "Stop"             → handlers/stop.handle()
-  ├── "SessionEnd"       → handlers/session_end.handle()
   └── 기타               → 경고 로그
 ```
 
@@ -213,7 +204,7 @@ stdin JSON → json.loads() → hook_event_name 분기
 ```
 ~/.ragent/
 ├── pending/                  # 프롬프트 임시 파일 (세션별 JSON)
-│   └── {session_id}.json     #   → Stop/SessionEnd에서 소비 후 삭제
+│   └── {session_id}.json     #   → Stop에서 소비 후 삭제
 ├── chroma_db/                # ChromaDB 영속 저장소
 │   ├── qa_pairs/             #   → Q&A 쌍 벡터 인덱스
 │   └── session_summaries/    #   → 세션 요약 벡터 인덱스
@@ -358,17 +349,6 @@ RAGent는 **Claude Code의 정상 동작을 절대 방해하지 않는 것**을 
           }
         ]
       }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "PYTHONPATH=/path/to/RAGent /path/to/RAGent/.venv/bin/python -m ragent",
-            "timeout": 600
-          }
-        ]
-      }
     ]
   }
 }
@@ -380,6 +360,5 @@ RAGent는 **Claude Code의 정상 동작을 절대 방해하지 않는 것**을 
 |--------|---------|------|
 | `UserPromptSubmit` | 5초 | 파일 쓰기만 하므로 빠르게 완료되어야 함. 응답 시작을 지연시키지 않기 위해 짧게 설정 |
 | `Stop` | 600초 | ChromaDB 초기화 및 색인 작업 포함. 최초 실행 시 모델 다운로드 등으로 시간이 걸릴 수 있음 |
-| `SessionEnd` | 600초 | 전체 transcript 파싱 + 모든 Q&A upsert + 요약 생성·색인. 긴 세션일수록 시간 필요 |
 
 **중복 방지:** `install.py`는 기존에 등록된 RAGent hook을 감지(`"ragent" in command`)하여 제거한 후 새로 추가합니다. 따라서 여러 번 실행해도 안전합니다.
