@@ -10,6 +10,7 @@ points.
 
 import logging
 import os
+import uuid
 
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.intent_classifying_modules import HybridClassifier
@@ -75,11 +76,13 @@ def handle(data: dict) -> None:
                 continue
             # Chunker가 부여한 UUID 기반 chunk_id를 결정적 ID로 덮어써,
             # 같은 transcript 재처리 시 같은 point ID로 매핑되도록 한다.
-            parent_id = f"{session_id}_turn_{turn_idx}"
+            parent_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:turn:{turn_idx}"))
             chunks[0].metadata.chunk_id = parent_id
             for code_idx, c in enumerate(chunks[1:]):
                 c.metadata.parent_id = parent_id
-                c.metadata.chunk_id = f"{parent_id}_code_{code_idx}"
+                c.metadata.chunk_id = str(
+                    uuid.uuid5(uuid.NAMESPACE_URL, f"{parent_id}:code:{code_idx}")
+                )
 
             intent = intent_classifier.classify(chunks[0].payload).category
             for c in chunks:
