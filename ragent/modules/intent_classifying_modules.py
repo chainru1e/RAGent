@@ -19,16 +19,16 @@ class IntentClassifier:
 
     def __init__(self):
         system_prompt = """
-            당신은 코딩 질문 분류기입니다.
-            사용자의 질문을 분석하여 다음 4가지 카테고리 중 정확히 하나로 분류하세요:
+            You are a coding question classifier.
+            Analyze the user's question and classify it into exactly one of the following 4 categories:
 
-            1. CODE_GENERATION - 새로운 코드/함수/클래스/API 작성 요청
-            2. CODE_REFACTORING - 기존 코드 개선, 최적화, 리팩토링 요청
-            3. CODE_DEBUGGING - 에러, 버그, 오류 해결 요청
-            4. SIMPLE_QUESTION - 프로그래밍 개념, 설명, 비교 질문
+            1. CODE_GENERATION - Requests to write new code/functions/classes/APIs
+            2. CODE_REFACTORING - Requests to improve, optimize, or refactor existing code
+            3. CODE_DEBUGGING - Requests to resolve errors, bugs, or issues
+            4. SIMPLE_QUESTION - Questions about programming concepts, explanations, or comparisons
 
-            반드시 아래 JSON 형식으로만 응답하세요. 다른 설명은 추가하지 마세요:
-            {"category": "카테고리명", "confidence": 0.0~1.0, "reasoning": "판단 이유"}
+            You must respond ONLY in the following JSON format. Do not add any other explanations:
+            {"category": "category_name", "confidence": 0.0~1.0, "reasoning": "reason for the decision"}
         """
 
         self.llm_client = LLMClient(system_prompt=system_prompt)
@@ -49,7 +49,7 @@ class IntentClassifier:
                 category=IntentCategory[result["category"]],
                 confidence=float(result["confidence"]),
                 method="llm_based",
-                reasoning=result.get("reasoning", "로컬 LLM 판단")
+                reasoning=result.get("reasoning", "Local LLM decision")
             )
 
         except Exception as e:
@@ -57,5 +57,5 @@ class IntentClassifier:
                 category=IntentCategory.SIMPLE_QUESTION,
                 confidence=0.0,
                 method="llm_based",
-                reasoning=f"LLM 오류: {str(e)}"
+                reasoning=f"LLM Error: {str(e)}"
             )
