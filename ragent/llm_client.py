@@ -9,7 +9,7 @@ class LLMClient:
         
         self.system_prompt = system_prompt 
 
-    def ask(self, prompt: str, override_system_prompt: str = None) -> str:
+    def ask(self, prompt: str, override_system_prompt: str = None, temperature=0.7) -> str:
         # 일회성 시스템 프롬프트가 들어오면 그걸 쓰고, 아니면 원래 시스템 프롬프트(멤버 변수)을 쓴다.
         active_system_prompt = override_system_prompt if override_system_prompt else self.system_prompt
         
@@ -21,7 +21,7 @@ class LLMClient:
                     {"role": "user", "content": prompt}
                 ],
                 stream=False,
-                temperature=0.7
+                temperature=temperature
             )
             return response.choices[0].message.content
             
