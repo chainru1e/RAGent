@@ -7,10 +7,11 @@ and indexes the Q&A pair in ChromaDB.
 import logging
 import os
 
-from ragent.modules.chunking_modules import *
-from ragent.modules.intent_classifying_modules import *
-from ragent.modules.embedding_modules import *
-from ragent.vectordb import *
+from ragent.modules.chunking_modules import Chunker
+from ragent.modules.embedding_modules import HybridEmbedding
+from ragent.modules.indexing_modules import index_turn
+from ragent.modules.intent_classifying_modules import HybridClassifier
+from ragent.vectordb import QdrantStorage
 from ragent.config import GEMINI_API_KEY
 
 logger = logging.getLogger("ragent")
@@ -54,23 +55,15 @@ def handle(data: dict) -> None:
         logger.warning("Stop: no turns found in transcript %s", transcript_path)
         return
 
-    chunks = chunker.process_turn(last_turn)
-
-    context_chunk = next((chunk for chunk in chunks if chunk.metadata.chunk_id), None)
-    if not context_chunk:
-        logger.warning("Stop: no context chunk found")
-        return
-
-    intent = intent_classifier.classify(context_chunk.payload).category
-    texts = [chunk.payload for chunk in chunks]
-    vectors = embedder.embed_batch(texts, batch_size=32)
-
-    for chunk, vector in zip(chunks, vectors):
-        chunk.metadata.type = intent
-        chunk.vector = vector
-
     try:
-        count = vectordb.add_points_batch(chunks)
+        count = index_turn(
+            last_turn,
+            session_id=session_id,
+            chunker=chunker,
+            intent_classifier=intent_classifier,
+            embedder=embedder,
+            vectordb=vectordb,
+        )
         logger.info("Stop: indexed %d chunks for session %s", count, session_id)
     finally:
         vectordb.close()

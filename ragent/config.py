@@ -11,6 +11,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BASE_DIR = Path.home() / ".ragent"
 QDRANT_DIR = BASE_DIR / "qdrant_storage"
 LOG_FILE = BASE_DIR / "ragent.log"
+FAILED_CHUNKS_FILE = BASE_DIR / "failed_chunks.jsonl"
 
 LLM_REPO_ID = "unsloth/Qwen3.5-9B-GGUF"
 LLM_FILENAME = "Qwen3.5-9B-Q4_K_M.gguf"
