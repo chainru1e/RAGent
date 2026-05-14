@@ -1,15 +1,11 @@
 """Codex CLI 어댑터.
 
-Codex CLI 의 hook 이벤트(UserPromptSubmit/Stop/SessionStart 등) 와 rollout
-JSONL transcript 를 RAGent 의 정규화 인터페이스로 매핑한다.
+Codex CLI 의 hook 이벤트(UserPromptSubmit/Stop 등) 와 rollout JSONL
+transcript 를 RAGent 의 정규화 인터페이스로 매핑한다.
 
 이벤트 매핑:
 - UserPromptSubmit → "prompt"   (Claude Code 와 동일 이름)
 - Stop             → "response"  (Claude Code 와 동일 이름)
-- (없음)            → "session_end"
-  Codex CLI 에는 SessionEnd 이벤트가 존재하지 않는다 (출처:
-  https://developers.openai.com/codex/hooks).  on_session_end 는 dispatch
-  로부터 절대 호출되지 않는다.
 
 Hook 입력 JSON 키 이름은 Claude Code 와 호환 (session_id / transcript_path /
 hook_event_name / prompt / stop_hook_active 등) 이라 기존 handler 에 그대로
@@ -55,13 +51,6 @@ class CodexAdapter(BaseAdapter):
         from ragent.handlers.stop import handle
         handle(data)
 
-    def on_session_end(self, data: dict) -> None:
-        raise NotImplementedError(
-            "Codex CLI does not emit a SessionEnd hook event. "
-            "_resolve_event_kind never returns 'session_end' for CodexAdapter, "
-            "so dispatch should never reach this method."
-        )
-
     @classmethod
     def install(cls) -> None:
         """Codex 의 user-level hook 설정에 RAGent 를 등록한다.
@@ -72,8 +61,7 @@ class CodexAdapter(BaseAdapter):
         건드리지 않으므로 우선순위 충돌 가능성 있음 — Codex CLI 가 두 소스를
         어떻게 머지하는지는 공식 문서가 명시 답하지 않음.
 
-        등록 이벤트: UserPromptSubmit, Stop. SessionEnd 는 Codex CLI 에
-        존재하지 않아 등록할 수 없다.
+        등록 이벤트: UserPromptSubmit, Stop.
 
         멱등성: command 문자열에 "-m ragent" 가 포함된 기존 entry 를 모두
         제거한 뒤 새 hook 을 append. 두 번 호출해도 중복 등록되지 않는다.

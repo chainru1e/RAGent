@@ -5,8 +5,7 @@
 원래 어댑터의 raw 스키마에 직접 의존하지 않는다.
 
 필드 결정 근거(Phase 5 §0-3 조사):
-- role / content: chunking_modules._extract_turn_components 와 session_end 의
-  turn-start 판정에서 읽힌다.
+- role / content: chunking_modules._extract_turn_components 에서 읽힌다.
 - content_type: 현재 어떤 다운스트림도 직접 읽지 않는다. 본문(content) 의
   '[text]' / '[tool_result]' / '[Write]' 같은 prefix tag 가 사실상 같은
   정보를 운반하기 때문. 미래의 어댑터(예: Codex) 가 prefix tag 컨벤션을

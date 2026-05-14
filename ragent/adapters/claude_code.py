@@ -1,6 +1,6 @@
 """Claude Code 어댑터.
 
-Claude Code의 hook 이벤트 이름(UserPromptSubmit/Stop/SessionEnd 등)은
+Claude Code의 hook 이벤트 이름(UserPromptSubmit/Stop 등)은
 이 모듈 안에서만 다룬다. 무거운 의존성(qdrant, FlagEmbedding 등) 로드를
 hook 호출 시점까지 미루기 위해 handler import는 lazy로 수행한다.
 """
@@ -26,7 +26,6 @@ class ClaudeCodeAdapter(BaseAdapter):
         return {
             "UserPromptSubmit": "prompt",
             "Stop": "response",
-            "SessionEnd": "session_end",
         }.get(event, "unknown")
 
     def on_prompt(self, data: dict) -> None:
@@ -35,10 +34,6 @@ class ClaudeCodeAdapter(BaseAdapter):
 
     def on_response(self, data: dict) -> None:
         from ragent.handlers.stop import handle
-        handle(data)
-
-    def on_session_end(self, data: dict) -> None:
-        from ragent.handlers.session_end import handle
         handle(data)
 
     @classmethod
@@ -68,9 +63,6 @@ class ClaudeCodeAdapter(BaseAdapter):
                 {"hooks": [{"type": "command", "command": cmd, "timeout": 5}]}
             ],
             "Stop": [
-                {"hooks": [{"type": "command", "command": cmd, "timeout": 600}]}
-            ],
-            "SessionEnd": [
                 {"hooks": [{"type": "command", "command": cmd, "timeout": 600}]}
             ],
         }
