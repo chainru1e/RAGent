@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import uuid
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import RLock
@@ -103,13 +102,11 @@ class RAGentServer:
                 if not chunks:
                     continue
 
-                parent_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:turn:{turn_idx}"))
+                parent_id = f"{session_id}_turn_{turn_idx}"
                 chunks[0].metadata.chunk_id = parent_id
                 for code_idx, chunk in enumerate(chunks[1:]):
                     chunk.metadata.parent_id = parent_id
-                    chunk.metadata.chunk_id = str(
-                        uuid.uuid5(uuid.NAMESPACE_URL, f"{parent_id}:code:{code_idx}")
-                    )
+                    chunk.metadata.chunk_id = f"{parent_id}_code_{code_idx}"
 
                 intent = self.intent_classifier.classify(chunks[0].payload).category
                 for chunk in chunks:

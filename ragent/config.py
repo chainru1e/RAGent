@@ -9,8 +9,14 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 BASE_DIR = Path.home() / ".ragent"
-QDRANT_DIR = BASE_DIR / "qdrant_storage"
 LOG_FILE = BASE_DIR / "ragent.log"
+
+RAGENT_SERVER_HOST = "127.0.0.1"
+RAGENT_SERVER_PORT = 8765
+RAGENT_SERVER_URL = f"http://{RAGENT_SERVER_HOST}:{RAGENT_SERVER_PORT}"
+
+QDRANT_HOST = "127.0.0.1"
+QDRANT_PORT = 6333
 
 LLM_REPO_ID = "unsloth/Qwen3.5-9B-GGUF"
 LLM_FILENAME = "Qwen3.5-9B-Q4_K_M.gguf"
@@ -26,5 +32,4 @@ RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
 
 def ensure_dirs() -> None:
     """Create required directories if they don't exist."""
-    QDRANT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
