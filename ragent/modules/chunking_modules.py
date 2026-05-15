@@ -2,6 +2,7 @@ from astchunk import ASTChunkBuilder
 import os
 import copy
 import uuid
+import hashlib
 
 from ragent.models.chunk import Chunk, ChunkMetaData
 from ragent.models.parsed_message import NormalizedMessage
@@ -34,6 +35,9 @@ class Chunker:
         configs (dict): ASTChunkBuilder 설정값(청크 크기, 메타데이터 템플릿 등)을 담은 딕셔너리.
         builders_cache (dict): 언어별로 생성된 ASTChunkBuilder 인스턴스를 재사용하기 위한 캐시.
     """
+
+    UUID_NAMESPACE = uuid.NAMESPACE_OID
+
     def __init__(self):
         # ASTChunkBuilder 설정
         self.configs = {
@@ -99,13 +103,15 @@ class Chunker:
         1. context_chunk: [text] 태그가 붙은 일반 대화 텍스트를 역할 정보와 함께 누적한 문맥(부모) 청크
         2. code_chunks: ASSISTANT의 [Write] 메시지에서 파일 경로와 코드 본문을 추출하여 조립한 코드(자식) 청크 리스트
 
-        대화 턴 전체를 묶는 고유 UUID(id)를 생성하여 문맥과 코드를 하나로 묶는 데이터 계층 구조의 기반을 마련한다.
+        turn_data에 포함된 메시지 전체 내용을 해시(Hash)하여 결정론적인 고유 UUID5(id)를 생성하고,
+        이를 통해 문맥과 코드를 하나로 묶는 데이터 계층 구조의 기반을 마련한다.
+        (동일한 대화 턴이 입력되면 항상 같은 ID를 보장하여 데이터 중복을 방지한다.)
 
         처리 규칙:
         - 각 메시지의 role은 기본값 unknown으로 읽고 대문자로 정규화한다.
         - content가 [text]로 시작하면 태그를 제거해 context_text에 추가한다.
         - role이 ASSISTANT이고 content가 [Write]로 시작하면 파일 경로와 코드 본문을 파싱한다.
-        - 파싱된 코드는 `ChunkMetadata`가 부여된 도립적인 `Chunk` 객체로 조립되어 리스트에 추가된다.
+        - 파싱된 코드는 `ChunkMetadata`가 부여된 독립적인 `Chunk` 객체로 조립되어 리스트에 추가된다.
         - 루프 종료 후, context_text 또한 `ChunkMetadata`가 부여된 단일 `Chunk`객체로 조립된다.
 
         Args:
@@ -123,7 +129,9 @@ class Chunker:
         context_text = ""
         code_chunks = []
 
-        id = str(uuid.uuid4())
+        combined_content = "".join([f"{msg.role}:{msg.content}" for msg in turn_data])
+        content_hash = hashlib.sha256(combined_content.encode('utf-8')).hexdigest()
+        id = str(uuid.uuid5(self.UUID_NAMESPACE, content_hash))
 
         for msg in turn_data:
             role = msg.role.upper() # USER 또는 ASSISTANT
@@ -216,5 +224,5 @@ class Chunker:
         # 최종적으로 쪼개진 결과에 chunk_id 부여
         parent_id = context_chunk.metadata.chunk_id
         for i, chunk in enumerate(refined_code_chunks):
-            chunk.metadata.chunk_id = f"{parent_id}_code_{i}"
+            chunk.metadata.chunk_id = str(uuid.uuid5(self.UUID_NAMESPACE, f"{parent_id}_code_{i}"))
         return [context_chunk] + refined_code_chunks

@@ -7,11 +7,10 @@ and indexes the Q&A pair in ChromaDB.
 import logging
 import os
 
-from ragent.modules.chunking_modules import Chunker
-from ragent.modules.embedding_modules import HybridEmbedding
-from ragent.modules.indexing_modules import index_turn
-from ragent.modules.intent_classifying_modules import HybridClassifier
-from ragent.vectordb import QdrantStorage
+from ragent.modules.chunking_modules import *
+from ragent.modules.intent_classifying_modules import *
+from ragent.modules.embedding_modules import *
+from ragent.vectordb import *
 from ragent.config import GEMINI_API_KEY
 
 logger = logging.getLogger("ragent")
@@ -45,7 +44,7 @@ def handle(data: dict) -> None:
 
     parser = adapter_cls.parser_class(transcript_path)
     chunker = Chunker()
-    intent_classifier = HybridClassifier(GEMINI_API_KEY)
+    intent_classifier = IntentClassifier()
     embedder = HybridEmbedding()
     vectordb = QdrantStorage(os.path.basename(os.path.dirname(transcript_path)))
 
