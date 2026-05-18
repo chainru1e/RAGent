@@ -22,7 +22,7 @@ from ragent.modules.chunking_modules import Chunker
 from ragent.modules.embedding_modules import HybridEmbedding
 from ragent.modules.intent_classifying_modules import IntentClassifier
 from ragent.modules.retrieval_modules import Retriever
-from ragent.vectordb import QdrantStorage
+from ragent.vectordb_client import QdrantStorage
 
 logger = logging.getLogger("ragent.server")
 
