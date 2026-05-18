@@ -78,62 +78,6 @@ class RAGentServer:
         logger.info("Save: indexed %d chunks for session %s", count, session_id)
         return {"ok": True, "indexed": count}
 
-    def save_all(self, request: dict[str, Any]) -> dict[str, Any]:
-        session_id = request.get("session_id", "")
-        transcript_path = request.get("transcript_path", "")
-
-        if not session_id:
-            return {"ok": False, "indexed": 0, "reason": "missing_session_id"}
-
-        if not transcript_path:
-            return {"ok": False, "indexed": 0, "reason": "missing_transcript_path"}
-
-        with self._lock:
-            parser = self._build_parser(transcript_path)
-            turns = parser.parse_full_transcript()
-
-            if not turns:
-                logger.warning("SaveAll: no turns found in transcript %s", transcript_path)
-                return {"ok": True, "indexed": 0, "reason": "no_turn_found"}
-
-            all_chunks: list[Chunk] = []
-            for turn_idx, turn in enumerate(turns):
-                chunks = self.chunker.process_turn(turn)
-                if not chunks:
-                    continue
-
-                parent_id = f"{session_id}_turn_{turn_idx}"
-                chunks[0].metadata.chunk_id = parent_id
-                for code_idx, chunk in enumerate(chunks[1:]):
-                    chunk.metadata.parent_id = parent_id
-                    chunk.metadata.chunk_id = f"{parent_id}_code_{code_idx}"
-
-                intent = self.intent_classifier.classify(chunks[0].payload).category
-                for chunk in chunks:
-                    chunk.metadata.type = intent
-                all_chunks.extend(chunks)
-
-            if not all_chunks:
-                logger.warning("SaveAll: no chunks produced from %s", transcript_path)
-                return {"ok": True, "indexed": 0, "reason": "no_chunks"}
-
-            texts = [chunk.payload for chunk in all_chunks]
-            vectors = self.embedder.embed_batch(texts, batch_size=32)
-
-            for chunk, vector in zip(all_chunks, vectors):
-                chunk.vector = vector
-
-            vectordb = self._get_vectordb(transcript_path)
-            count = vectordb.add_points_batch(all_chunks)
-
-        logger.info(
-            "SaveAll: indexed %d chunks across %d turns for session %s",
-            count,
-            len(turns),
-            session_id,
-        )
-        return {"ok": True, "indexed": count, "turns": len(turns)}
-
     def search(self, request: dict[str, Any]) -> dict[str, Any]:
         session_id = request.get("session_id", "")
         transcript_path = request.get("transcript_path", "")
@@ -188,11 +132,6 @@ class RAGentServer:
 
                     if self.path == "/search":
                         response = app.search(body)
-                        self._write_json(200, response)
-                        return
-
-                    if self.path == "/save_all":
-                        response = app.save_all(body)
                         self._write_json(200, response)
                         return
 
