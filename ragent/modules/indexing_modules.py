@@ -16,7 +16,7 @@ from ragent.config import FAILED_CHUNKS_FILE, ensure_dirs
 from ragent.models.parsed_message import NormalizedMessage
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.embedding_modules import HybridEmbedding
-from ragent.modules.intent_classifying_modules import HybridClassifier
+from ragent.modules.intent_classifying_modules import IntentClassifier
 from ragent.vectordb_client import QdrantStorage
 
 logger = logging.getLogger("ragent")
@@ -74,7 +74,7 @@ def index_turn(
     *,
     session_id: str,
     chunker: Chunker,
-    intent_classifier: HybridClassifier,
+    intent_classifier: IntentClassifier,
     embedder: HybridEmbedding,
     vectordb: QdrantStorage,
 ) -> int:
