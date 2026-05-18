@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv",
     "astchunk",
     "FlagEmbedding",
+    "peft",
     "qdrant-client",
     "torch",
     "transformers==4.44.0",

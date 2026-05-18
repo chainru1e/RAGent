@@ -1,4 +1,4 @@
-from ragent.config import QDRANT_DIR, SHORT_DENSE_SIZE, LONG_DENSE_SIZE, ensure_dirs
+from ragent.config import QDRANT_HOST, QDRANT_PORT, SHORT_DENSE_SIZE, LONG_DENSE_SIZE
 from ragent.models.chunk import Chunk, ChunkMetaData
 from ragent.models.vector import HybridVector
 from ragent.models.intent import IntentCategory
@@ -18,10 +18,9 @@ from qdrant_client.models import (
 from ragent.models.chunk import Chunk
 
 class QdrantStorage:
-    def __init__(self, collection_name: str, path=QDRANT_DIR):
-        ensure_dirs()
+    def __init__(self, collection_name: str):
         self.collection_name = collection_name
-        self.client = QdrantClient(path=path)
+        self.client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
         self._init_collection()
 
     def _init_collection(self):
