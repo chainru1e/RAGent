@@ -21,7 +21,7 @@ from ragent.models.chunk import Chunk
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.embedding_modules import HybridEmbedding
 from ragent.modules.intent_classifying_modules import IntentClassifier
-from ragent.modules.retrieval_modules import Reranker, Retriever
+from ragent.modules.retrieval_modules import Retriever
 from ragent.vectordb import QdrantStorage
 
 logger = logging.getLogger("ragent.server")
@@ -35,7 +35,6 @@ class RAGentServer:
         self.chunker = Chunker()
         self.intent_classifier = IntentClassifier()
         self.embedder = HybridEmbedding()
-        self.reranker = Reranker()
         self._vectordb_cache: dict[str, QdrantStorage] = {}
         self._lock = RLock()
 
@@ -97,7 +96,6 @@ class RAGentServer:
             retriever = Retriever(
                 vectordb=vectordb,
                 embedder=self.embedder,
-                reranker=self.reranker,
             )
             chunks = retriever.retrieve(prompt)
 
