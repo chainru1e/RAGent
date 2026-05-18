@@ -16,11 +16,11 @@ from threading import RLock
 from typing import Any
 
 from ragent import config
-from ragent.config import GEMINI_API_KEY, LOG_FILE, ensure_dirs
+from ragent.config import LOG_FILE, ensure_dirs
 from ragent.models.chunk import Chunk
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.embedding_modules import HybridEmbedding
-from ragent.modules.intent_classifying_modules import HybridClassifier
+from ragent.modules.intent_classifying_modules import IntentClassifier
 from ragent.modules.retrieval_modules import Reranker, Retriever
 from ragent.vectordb import QdrantStorage
 
@@ -33,7 +33,7 @@ DEFAULT_SERVER_PORT = 8765
 class RAGentServer:
     def __init__(self):
         self.chunker = Chunker()
-        self.intent_classifier = HybridClassifier(GEMINI_API_KEY)
+        self.intent_classifier = IntentClassifier()
         self.embedder = HybridEmbedding()
         self.reranker = Reranker()
         self._vectordb_cache: dict[str, QdrantStorage] = {}
