@@ -8,12 +8,10 @@ version = "0.1.0"
 description = "RAG-based conversation indexer for Claude Code hooks"
 requires-python = ">=3.10"
 dependencies = [
-    "python-dotenv",
     "astchunk",
     "FlagEmbedding",
     "peft",
     "qdrant-client",
-    "torch",
     "transformers==4.44.0",
     "llama-cpp-python[server]",
     "uvicorn",
