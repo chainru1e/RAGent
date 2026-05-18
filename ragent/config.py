@@ -10,6 +10,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 BASE_DIR = Path.home() / ".ragent"
 LOG_FILE = BASE_DIR / "ragent.log"
+QDRANT_DIR = BASE_DIR / "qdrant_storage"
 
 RAGENT_SERVER_HOST = "127.0.0.1"
 RAGENT_SERVER_PORT = 8765
@@ -33,3 +34,4 @@ RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
 def ensure_dirs() -> None:
     """Create required directories if they don't exist."""
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    QDRANT_DIR.mkdir(parents=True, exist_ok=True)

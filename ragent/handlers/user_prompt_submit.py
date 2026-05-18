@@ -33,7 +33,7 @@ def handle(data: dict) -> None:
             "transcript_path": transcript_path,
             "prompt": prompt,
         },
-        timeout=4.0,
+        timeout=30.0,
     )
     context = response.get("context", "") if response else ""
 
