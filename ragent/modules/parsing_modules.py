@@ -39,6 +39,20 @@ class BaseParser(ABC):
         이벤트, 빈 본문) 은 None 을 반환한다.
         """
 
+    def _process_line(self, raw: bytearray) -> NormalizedMessage | None:
+        """역순으로 누적된 buffer 를 디코딩·파싱해 NormalizedMessage 로 반환한다.
+
+        빈 줄이거나 JSON 파싱에 실패하면 None 을 반환한다.
+        """
+        line = raw[::-1].decode('utf-8')
+        if not line.strip():
+            return None
+        try:
+            data = json.loads(line)
+            return self.parse_transcript_line(data)
+        except json.JSONDecodeError:
+            return None
+
     def parse_last_turn(self) -> list[NormalizedMessage]:
         """Transcript 를 역순으로 읽어 가장 최근의 1턴을 추출한다.
 
@@ -61,23 +75,23 @@ class BaseParser(ABC):
                 char = f.read(1)
 
                 if char == b'\n' and buffer:
-                    line = buffer[::-1].decode('utf-8')
+                    parsed_message = self._process_line(buffer)
                     buffer.clear()
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            parsed_message = self.parse_transcript_line(data)
-                            if parsed_message:
-                                turn.append(parsed_message)
-                                if parsed_message.role == 'user' and parsed_message.content.startswith('[text]'):
-                                    turn.reverse()
-                                    return turn
-                        except json.JSONDecodeError:
-                            pass
+                    if parsed_message:
+                        turn.append(parsed_message)
+                        if parsed_message.role == 'user' and parsed_message.content.startswith('[text]'):
+                            turn.reverse()
+                            return turn
                 elif char != b'\n':
                     buffer.extend(char)
 
                 position -= 1
+
+            # 루프 종료 후 잔여 버퍼 처리 (첫번째 줄 처리)
+            if buffer:
+                parsed_message = self._process_line(buffer)
+                if parsed_message:
+                    turn.append(parsed_message)
 
         turn.reverse()
         return turn
