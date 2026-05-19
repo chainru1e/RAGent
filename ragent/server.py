@@ -20,6 +20,7 @@ from ragent.config import LOG_FILE, ensure_dirs
 from ragent.models.chunk import Chunk
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.embedding_modules import HybridEmbedding
+from ragent.modules.indexing_modules import index_turn
 from ragent.modules.intent_classifying_modules import IntentClassifier
 from ragent.modules.retrieval_modules import Retriever
 from ragent.vectordb_client import QdrantStorage
@@ -56,23 +57,15 @@ class RAGentServer:
                 logger.warning("Save: no turns found in transcript %s", transcript_path)
                 return {"ok": True, "indexed": 0, "reason": "no_turn_found"}
 
-            chunks = self.chunker.process_turn(last_turn)
-            context_chunk = next((chunk for chunk in chunks if chunk.metadata.chunk_id), None)
-
-            if not context_chunk:
-                logger.warning("Save: no context chunk found for session %s", session_id)
-                return {"ok": True, "indexed": 0, "reason": "no_context_chunk"}
-
-            intent = self.intent_classifier.classify(context_chunk.payload).category
-            texts = [chunk.payload for chunk in chunks]
-            vectors = self.embedder.embed_batch(texts, batch_size=32)
-
-            for chunk, vector in zip(chunks, vectors):
-                chunk.metadata.type = intent
-                chunk.vector = vector
-
             vectordb = self._get_vectordb(transcript_path)
-            count = vectordb.add_points_batch(chunks)
+            count = index_turn(
+                turn=last_turn,
+                session_id=session_id,
+                chunker=self.chunker,
+                intent_classifier=self.intent_classifier,
+                embedder=self.embedder,
+                vectordb=vectordb,
+            )
 
         logger.info("Save: indexed %d chunks for session %s", count, session_id)
         return {"ok": True, "indexed": count}
