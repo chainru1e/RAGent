@@ -17,7 +17,6 @@ logger = logging.getLogger("ragent.llm")
 
 class LLMServer:
     def __init__(self, repo_id=LLM_REPO_ID, filename=LLM_FILENAME):
-        setup_logging()
         try:
             self.model_path = hf_hub_download(
                 repo_id=repo_id,
@@ -97,6 +96,11 @@ class LLMServer:
         app = create_app(settings=settings)
         uvicorn.run(app, host=settings.host, port=settings.port)
 
-if __name__ == "__main__":
+def main() -> None:
+    setup_logging()
     client = LLMServer()
     client.start_server()
+
+
+if __name__ == "__main__":
+    main()
