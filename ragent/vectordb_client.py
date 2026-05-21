@@ -1,21 +1,24 @@
-from ragent.config import QDRANT_HOST, QDRANT_PORT, SHORT_DENSE_SIZE, LONG_DENSE_SIZE
-from ragent.models.chunk import Chunk, ChunkMetaData
-from ragent.models.vector import HybridVector
-from ragent.models.intent import IntentCategory
-
+import logging
 from enum import Enum
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    PointStruct,
-    VectorParams,
-    SparseVectorParams,
     Distance,
-    Prefetch,
+    Fusion,
     FusionQuery,
-    Fusion
+    PointStruct,
+    Prefetch,
+    SparseVectorParams,
+    VectorParams,
 )
 
-from ragent.models.chunk import Chunk
+from ragent.config import QDRANT_HOST, QDRANT_PORT, SHORT_DENSE_SIZE, LONG_DENSE_SIZE
+from ragent.models.chunk import Chunk, ChunkMetaData
+from ragent.models.intent import IntentCategory
+from ragent.models.vector import HybridVector
+
+logger = logging.getLogger("ragent.vectordb")
+
 
 class QdrantStorage:
     def __init__(self, collection_name: str):
@@ -26,17 +29,19 @@ class QdrantStorage:
     def _init_collection(self):
         try:
             self.client.get_collection(self.collection_name)
-        except:
+            logger.debug("Collection already exists: %s", self.collection_name)
+        except Exception:
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config={
                     "dense_short": VectorParams(size=SHORT_DENSE_SIZE, distance=Distance.COSINE),
-                    "dense_long": VectorParams(size=LONG_DENSE_SIZE, distance=Distance.COSINE)
+                    "dense_long": VectorParams(size=LONG_DENSE_SIZE, distance=Distance.COSINE),
                 },
                 sparse_vectors_config={
-                    "sparse": SparseVectorParams()
-                }
+                    "sparse": SparseVectorParams(),
+                },
             )
+            logger.info("Created collection: %s", self.collection_name)
 
     def add_point(self, chunk: Chunk):
         meta = chunk.metadata
@@ -59,6 +64,7 @@ class QdrantStorage:
         )
 
         self.client.upsert(self.collection_name, [point])
+        logger.debug("Upserted 1 point to collection %s", self.collection_name)
 
     def add_points_batch(self, chunks: list[Chunk]) -> int:
         points = []
@@ -86,6 +92,7 @@ class QdrantStorage:
             )
 
         self.client.upsert(self.collection_name, points)
+        logger.debug("Upserted %d points to collection %s", len(points), self.collection_name)
         return len(points)
     
     def payload_to_chunk(self, payload: dict) -> Chunk:
@@ -160,7 +167,9 @@ class QdrantStorage:
             with_payload=True
         )
 
-        return [self.payload_to_chunk(point.payload) for point in results.points]
+        chunks = [self.payload_to_chunk(point.payload) for point in results.points]
+        logger.debug("Hybrid search returned %d results from collection %s", len(chunks), self.collection_name)
+        return chunks
     
     def get_stats(self) -> dict:
         try:

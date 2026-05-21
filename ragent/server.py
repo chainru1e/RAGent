@@ -16,7 +16,7 @@ from threading import RLock
 from typing import Any
 
 from ragent import config
-from ragent.config import LOG_FILE, ensure_dirs
+from ragent.logging_config import setup_logging
 from ragent.models.chunk import Chunk
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.embedding_modules import HybridEmbedding
@@ -206,18 +206,8 @@ class RAGentServer:
         }
 
 
-def _setup_logging() -> None:
-    ensure_dirs()
-    logging.basicConfig(
-        filename=str(LOG_FILE),
-        level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-
 def main() -> None:
-    _setup_logging()
+    setup_logging()
     server = RAGentServer()
     server.start_server()
 

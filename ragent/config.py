@@ -4,7 +4,11 @@ from pathlib import Path
 
 BASE_DIR = Path.home() / ".ragent"
 QDRANT_DIR = BASE_DIR / "qdrant_storage"
-LOG_FILE = BASE_DIR / "ragent.log"
+LOG_DIR = BASE_DIR / "logs"
+LOG_FILE = LOG_DIR / "ragent.log"
+LLM_LOG_FILE = LOG_DIR / "llm_server.log"
+RAGENT_SERVER_LOG_FILE = LOG_DIR / "ragent_server.log"
+VECTORDB_LOG_FILE = LOG_DIR / "vectordb_server.log"
 FAILED_CHUNKS_FILE = BASE_DIR / "failed_chunks.jsonl"
 
 RAGENT_SERVER_HOST = "127.0.0.1"
@@ -29,4 +33,4 @@ RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
 def ensure_dirs() -> None:
     """Create required directories if they don't exist."""
     QDRANT_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)

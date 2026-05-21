@@ -6,9 +6,10 @@ import time
 
 import requests
 
-from ragent.config import QDRANT_HOST, QDRANT_PORT, QDRANT_DIR, LOG_FILE
+from ragent.config import QDRANT_HOST, QDRANT_PORT, QDRANT_DIR
+from ragent.logging_config import setup_logging
 
-logger = logging.getLogger("ragent.qdrant_server")
+logger = logging.getLogger("ragent.vectordb")
 
 CONTAINER_NAME = "ragent-qdrant"
 HEALTH_URL = f"http://{QDRANT_HOST}:{QDRANT_PORT}/healthz"
@@ -116,12 +117,7 @@ class QdrantManager:
 
 
 def main() -> None:
-    logging.basicConfig(
-        filename=str(LOG_FILE),
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    setup_logging()
     qdrant = QdrantManager()
     qdrant.start()
 

@@ -4,23 +4,12 @@ import json
 import logging
 import sys
 
-from ragent.config import LOG_FILE, ensure_dirs
-
-
-def _setup_logging() -> None:
-    """Configure file-based logging."""
-    ensure_dirs()
-    logging.basicConfig(
-        filename=str(LOG_FILE),
-        level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+from ragent.logging_config import setup_logging
 
 
 def run() -> None:
     """Entry point: read stdin, dispatch to handler, never crash."""
-    _setup_logging()
+    setup_logging()
     logger = logging.getLogger("ragent")
 
     try:

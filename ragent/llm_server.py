@@ -1,28 +1,33 @@
-from ragent.utils import *
-from ragent.config import LLM_REPO_ID, LLM_FILENAME, LLM_SERVER_HOST, LLM_SERVER_PORT
+import logging
+import multiprocessing
+import sys
+
+import uvicorn
 from huggingface_hub import hf_hub_download
-from huggingface_hub.utils import RepositoryNotFoundError, EntryNotFoundError
+from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 from llama_cpp.server.app import create_app
 from llama_cpp.server.settings import Settings
-import sys
-import multiprocessing
-import uvicorn
+
+from ragent.config import LLM_FILENAME, LLM_REPO_ID, LLM_SERVER_HOST, LLM_SERVER_PORT
+from ragent.logging_config import setup_logging
+from ragent.utils import *
+
+logger = logging.getLogger("ragent.llm")
+
 
 class LLMServer:
-    def __init__(self,  repo_id=LLM_REPO_ID, filename=LLM_FILENAME):
+    def __init__(self, repo_id=LLM_REPO_ID, filename=LLM_FILENAME):
+        setup_logging()
         try:
             self.model_path = hf_hub_download(
-                repo_id=repo_id, 
-                filename=filename
+                repo_id=repo_id,
+                filename=filename,
             )
         except (RepositoryNotFoundError, EntryNotFoundError):
-            # 레포지토리가 없거나 파일명이 틀렸을 때
-            print(f"\n[Fatal Error] Model not found!")
-            print(f"Please verify that the repository '{repo_id}' contains the file '{filename}'.")
+            logger.error("Model not found: repo=%s file=%s", repo_id, filename)
             sys.exit(1)
-        except Exception as e:
-            # 기타 예외 상황
-            print(f"\n[Unknown Error] An unexpected error occurred during the download: {e}")
+        except Exception:
+            logger.exception("Unexpected error during model download")
             sys.exit(1)
         
         # 하드웨어 스펙 스캔
@@ -72,19 +77,24 @@ class LLMServer:
     
     def start_server(self, host=LLM_SERVER_HOST, port=LLM_SERVER_PORT):
         optimal_params = self._calculate_optimal_settings()
-        
-        # llama-cpp-python 서버의 Settings 객체에 값 주입
+        logger.info(
+            "Starting LLM server on http://%s:%s (n_gpu_layers=%s, n_ctx=%s, n_threads=%s)",
+            host, port,
+            optimal_params["n_gpu_layers"],
+            optimal_params["n_ctx"],
+            optimal_params["n_threads"],
+        )
+
         settings = Settings(
             model=self.model_path,
             n_gpu_layers=optimal_params["n_gpu_layers"],
             n_ctx=optimal_params["n_ctx"],
             n_threads=optimal_params["n_threads"],
             host=host,
-            port=port
+            port=port,
         )
-        
+
         app = create_app(settings=settings)
-        
         uvicorn.run(app, host=settings.host, port=settings.port)
 
 if __name__ == "__main__":
