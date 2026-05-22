@@ -28,10 +28,11 @@ class LLMServer:
         except Exception:
             logger.exception("Unexpected error during model download")
             sys.exit(1)
-        
+
         # 하드웨어 스펙 스캔
         self.ram_gb = get_system_ram_gb()
-        self.vram_gb = get_nvidia_vram_gb()
+        self.vram_gb = get_vram_gb()
+        self.is_apple = is_apple_silicon()
         self.cpu_cores = multiprocessing.cpu_count()
 
     def _calculate_optimal_settings(self):
@@ -48,32 +49,45 @@ class LLMServer:
                 - n_threads (int): 모델 추론에 할당할 최적의 CPU 스레드 수
         """
         optimal_threads = max(1, self.cpu_cores - 1)
-        
+
         settings_dict = {
             "n_gpu_layers": 0,
             "n_ctx": 2048,
-            "n_threads": optimal_threads
+            "n_threads": optimal_threads,
         }
-        
-        # Qwen 3.5 9B (약 5.56 GB 차지, 32 layers) 기준 하드웨어 분기
-        if self.vram_gb >= 8:
+
+        # Apple Silicon: llama.cpp가 Metal API를 명시적으로 호출해야 GPU를 사용한다.
+        # Unified Memory라 VRAM 부족 크래시가 없으므로 항상 전체 레이어를 오프로딩한다.
+        # n_ctx는 RAM 여유분을 고려해 설정한다.
+        if self.is_apple:
             settings_dict["n_gpu_layers"] = -1
-            settings_dict["n_ctx"] = 8192
-            
-        elif self.vram_gb >= 4:
+            settings_dict["n_ctx"] = 4096
+            return settings_dict
+
+        # NVIDIA / AMD: 독립 VRAM 기준으로 분기
+        # Qwen 3.5 9B (약 5.56 GB 차지, 32 layers) 기준 하드웨어 분기
+        if self.vram_gb >= 7.5:
+            settings_dict["n_gpu_layers"] = -1
+            settings_dict["n_ctx"] = 4096
+ 
+        elif self.vram_gb >= 5.5:
             settings_dict["n_gpu_layers"] = 20
             settings_dict["n_ctx"] = 4096
-            
-        elif self.ram_gb >= 15:
+ 
+        elif self.vram_gb >= 3.5:
+            settings_dict["n_gpu_layers"] = 10
+            settings_dict["n_ctx"] = 4096
+ 
+        elif self.ram_gb >= 15.5:
             settings_dict["n_gpu_layers"] = 0
             settings_dict["n_ctx"] = 4096
-            
+ 
         else:
             settings_dict["n_gpu_layers"] = 0
             settings_dict["n_ctx"] = 2048
-            
+
         return settings_dict
-    
+
     def start_server(self, host=LLM_SERVER_HOST, port=LLM_SERVER_PORT):
         optimal_params = self._calculate_optimal_settings()
         logger.info(
@@ -95,6 +109,7 @@ class LLMServer:
 
         app = create_app(settings=settings)
         uvicorn.run(app, host=settings.host, port=settings.port)
+
 
 def main() -> None:
     setup_logging()
