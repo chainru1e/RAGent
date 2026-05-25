@@ -1,4 +1,11 @@
-from ragent.config import SPARSE_EMBEDDING_MODEL, DENSE_EMBEDDING_REPO_ID, DENSE_EMBEDDING_FILENAME, DENSE_EMBEDDING_N_CTX, DENSE_EMBEDDING_N_SEQ_MAX, DENSE_EMBEDDING_N_CTX_SEQ
+from ragent.config import (
+    SPARSE_EMBEDDING_MODEL,
+    DENSE_EMBEDDING_REPO_ID,
+    DENSE_EMBEDDING_FILENAME,
+    DENSE_EMBEDDING_N_CTX,
+    DENSE_EMBEDDING_N_SEQ_MAX,
+    DENSE_EMBEDDING_N_CTX_SEQ
+)
 from qdrant_client.models import SparseVector
 from ragent.models.vector import HybridVector
 from huggingface_hub import hf_hub_download
