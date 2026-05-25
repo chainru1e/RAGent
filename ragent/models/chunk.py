@@ -5,11 +5,13 @@ class ChunkMetaData:
                  chunk_id: str = None,
                  parent_id: str = None,
                  file_path: str = None,
-                 type: IntentCategory = None):
+                 type: IntentCategory = None,
+                 context_prefix: str = None):
         self.chunk_id = chunk_id
         self.parent_id = parent_id
         self.file_path = file_path
         self.type = type
+        self.context_prefix = context_prefix
 
 class Chunk:
     def __init__(self,

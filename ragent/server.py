@@ -16,9 +16,11 @@ from threading import RLock
 from typing import Any
 
 from ragent import config
+from ragent.llm_client import LLMClient
 from ragent.logging_config import setup_logging
 from ragent.models.chunk import Chunk
 from ragent.modules.chunking_modules import Chunker
+from ragent.modules.contextual_retrieval_modules import ContextualEnricher
 from ragent.modules.embedding_modules import HybridEmbedding
 from ragent.modules.indexing_modules import index_turn
 from ragent.modules.intent_classifying_modules import IntentClassifier
@@ -36,6 +38,9 @@ class RAGentServer:
         self.chunker = Chunker()
         self.intent_classifier = IntentClassifier()
         self.embedder = HybridEmbedding()
+        # 별도 LLMClient 인스턴스. generate_prefix 가 매 호출 override_system_prompt
+        # 를 넘기므로 여기서 system_prompt 를 박지 않아도 무방.
+        self.contextual_enricher = ContextualEnricher(llm_client=LLMClient())
         self._vectordb_cache: dict[str, QdrantStorage] = {}
         self._lock = RLock()
 
@@ -65,6 +70,11 @@ class RAGentServer:
                 intent_classifier=self.intent_classifier,
                 embedder=self.embedder,
                 vectordb=vectordb,
+                contextual_enricher=(
+                    self.contextual_enricher
+                    if config.ENABLE_CONTEXTUAL_RETRIEVAL
+                    else None
+                ),
             )
 
         logger.info("Save: indexed %d chunks for session %s", count, session_id)
