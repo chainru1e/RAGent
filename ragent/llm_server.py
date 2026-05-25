@@ -1,7 +1,7 @@
 import logging
 import multiprocessing
 import sys
-
+import math
 import uvicorn
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
@@ -48,7 +48,7 @@ class LLMServer:
                 - n_ctx (int): 모델이 한 번에 처리할 수 있는 최대 컨텍스트(토큰) 길이
                 - n_threads (int): 모델 추론에 할당할 최적의 CPU 스레드 수
         """
-        optimal_threads = max(1, self.cpu_cores - 1)
+        optimal_threads = max(1, math.floor(self.cpu_cores * 0.5))
 
         settings_dict = {
             "n_gpu_layers": 0,
