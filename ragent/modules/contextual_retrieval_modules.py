@@ -22,10 +22,11 @@ from ragent.models.parsed_message import NormalizedMessage
 logger = logging.getLogger("ragent")
 
 
-# turn 직렬화 길이 상한. 초과 시 꼬리쪽을 잘라낸다. n_ctx 가 작은 환경에서는
-# LLM 측에서 컨텍스트 초과로 실패할 수 있으나, 그 경우 generate_prefix 가
-# None 을 반환하므로 index_turn 은 prefix 없이 계속 진행한다.
-MAX_TURN_CHARS = 12000
+# turn 직렬화 길이 상한. 직렬화된 turn 프롬프트가 LLM 서버 n_ctx(4096 토큰)
+# 안에 들어오도록 6000 으로 설정한다. 초과 시 꼬리쪽을 잘라낸다. 그래도 LLM
+# 측에서 컨텍스트 초과로 실패하는 경우에는 generate_prefix 가 None 을 반환
+# 하므로 index_turn 은 prefix 없이 계속 진행한다.
+MAX_TURN_CHARS = 6000
 
 # prefix 한 개의 최대 길이(문자수). 약 100 토큰 상당.
 MAX_PREFIX_CHARS = 400
