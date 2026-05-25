@@ -9,13 +9,13 @@ description = "RAG-based conversation indexer for Claude Code hooks"
 requires-python = ">=3.10"
 dependencies = [
     "astchunk",
-    "FlagEmbedding",
     "peft",
     "qdrant-client",
-    "transformers==4.44.0",
+    "sentence_transformers",
     "llama-cpp-python[server]",
     "uvicorn",
-    "openai"
+    "openai",
+    "fastembed"
 ]
 
 [project.optional-dependencies]

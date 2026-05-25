@@ -105,7 +105,7 @@ def index_turn(
         intent = intent_classifier.classify(context_chunk.payload).category
         texts = [c.payload for c in chunks]
         vectors = _retry(
-            lambda: embedder.embed_batch(texts, batch_size=32),
+            lambda: embedder.embed_batch(texts),
             op_name=f"embed_batch ({turn_summary})",
         )
         for c, v in zip(chunks, vectors):
