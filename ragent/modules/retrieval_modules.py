@@ -7,7 +7,23 @@ from ragent.models.transformed_query import TransformedQuery
 from ragent.llm_client import LLMClient
 from sentence_transformers import CrossEncoder
 
-def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1, min_chunks: int = 1) -> list[Chunk]:
+def static_cutoff(scored_chunks: list[tuple[Chunk, float]], threshold: float) -> list[tuple[Chunk, float]]:
+    """
+    주어진 임계값(threshold) 이상의 점수를 가진 청크들만 필터링하여 반환한다.
+    
+    Args:
+        scored_chunks: (Chunk, 점수) 형태의 튜플 리스트.
+        threshold: 통과시키기 위한 최소 점수 기준.
+        
+    Returns:
+        list[tuple[Chunk, float]]: 정적 컷오프 조건을 통과한 (Chunk, 점수) 형태의 튜플 리스트.
+    """
+    if not scored_chunks:
+        return []
+    
+    return [(chunk, score) for chunk, score in scored_chunks if score >= threshold]
+
+def dynamic_cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1, min_chunks: int = 1) -> list[tuple[Chunk, float]]:
     """
     청크들의 유사도 점수 낙폭을 분석하여 연관성이 떨어지는 하위 청크들을 잘라낸다.
     입력된 데이터는 내부적으로 점수 기준 내림차순 정렬을 적용한 뒤 컷오프를 수행한다.
@@ -18,7 +34,7 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
         min_chunks: 점수 낙폭이 크더라도 무조건 결과에 포함시킬 최소 청크 개수. 기본값 1.
         
     Returns:
-        동적 컷오프 조건을 통과하여 살아남은 순수 Chunk 객체 리스트.
+        list[tuple[Chunk, float]]: 동적 컷오프 조건을 통과하여 살아남은 (Chunk, 점수) 형태의 튜플 리스트.
     """
     if not scored_chunks:
         return []
@@ -26,9 +42,9 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
     sorted_chunks = sorted(scored_chunks, key=lambda x: x[1], reverse=True)
     
     if len(sorted_chunks) <= min_chunks:
-        return [chunk for chunk, score in sorted_chunks]
+        return sorted_chunks
 
-    filtered_chunks = [sorted_chunks[0][0]]
+    filtered_chunks = [sorted_chunks[0]]
 
     drop_detected = False
     for i in range(1, len(sorted_chunks)):
@@ -43,7 +59,7 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
         if drop_detected and len(filtered_chunks) >= min_chunks:
             break
             
-        filtered_chunks.append(sorted_chunks[i][0])
+        filtered_chunks.append(sorted_chunks[i])
 
     return filtered_chunks
 
@@ -74,7 +90,9 @@ class Retriever:
         
         # 4. 시드 정제
         reranked_initial_pairs = self.reranker.rerank(query, initial_chunks)
-        seed_chunks = cutoff(reranked_initial_pairs, drop_threshold=0.1, min_chunks=1)
+        static_cutoff_chunks = static_cutoff(reranked_initial_pairs, 0.3)
+        dynamic_cutoff_chunks = dynamic_cutoff(static_cutoff_chunks, drop_threshold=0.1, min_chunks=1)
+        seed_chunks = [chunk for chunk, score in dynamic_cutoff_chunks]
 
         return seed_chunks
     
