@@ -15,6 +15,10 @@ from typing import Callable, TypeVar
 from ragent.config import FAILED_CHUNKS_FILE, ensure_dirs
 from ragent.models.parsed_message import NormalizedMessage
 from ragent.modules.chunking_modules import Chunker
+from ragent.modules.contextual_retrieval_modules import (
+    ContextualEnricher,
+    serialize_turn,
+)
 from ragent.modules.embedding_modules import HybridEmbedding
 from ragent.modules.intent_classifying_modules import IntentClassifier
 from ragent.vectordb_client import QdrantStorage
@@ -77,13 +81,19 @@ def index_turn(
     intent_classifier: IntentClassifier,
     embedder: HybridEmbedding,
     vectordb: QdrantStorage,
+    contextual_enricher: ContextualEnricher | None = None,
 ) -> int:
-    """단일 턴을 chunk → classify → embed → upsert 하나의 단위로 인덱싱.
+    """단일 턴을 chunk → classify → (enrich) → embed → upsert 하나의 단위로 인덱싱.
 
     실패 처리 정책:
     - 어떤 단계든 예외가 올라오면 silent fail 차단을 위해 잡아 로그/기록 후 0 반환
     - 외부 자원 호출(embed_batch, qdrant upsert) 은 transient 실패 대비 retry
     - 영구 실패는 failed_chunks.jsonl 에 append 하여 추후 진단 가능
+
+    contextual_enricher 가 주어지면 코드 청크 각각에 대해 turn 전체를 문서로
+    한 맥락 문장을 생성해 chunk.metadata.context_prefix 에 보관한다. 임베딩
+    입력만 "prefix + payload" 로 합본하고 chunk.payload 와 vectordb 저장값은
+    원본을 유지한다(검색 결과로 prefix 가 노출되지 않도록).
     """
     if not turn:
         return 0
@@ -101,9 +111,30 @@ def index_turn(
             return 0
 
         context_chunk = chunks[0]
-        # HybridClassifier has internal keyword fallback → external retry unneeded
         intent = intent_classifier.classify(context_chunk.payload).category
-        texts = [c.payload for c in chunks]
+
+        if contextual_enricher is not None and len(chunks) > 1:
+            turn_text = serialize_turn(turn)
+            t0 = time.time()
+            enriched = 0
+            for code_chunk in chunks[1:]:
+                prefix = contextual_enricher.generate_prefix(
+                    turn_text, code_chunk.payload
+                )
+                if prefix:
+                    code_chunk.metadata.context_prefix = prefix
+                    enriched += 1
+            logger.info(
+                "indexer: contextual prefixes generated for %d/%d code chunks in %.2fs (%s)",
+                enriched, len(chunks) - 1, time.time() - t0, turn_summary,
+            )
+
+        texts = [
+            f"{c.metadata.context_prefix}\n\n{c.payload}"
+            if c.metadata.context_prefix
+            else c.payload
+            for c in chunks
+        ]
         vectors = _retry(
             lambda: embedder.embed_batch(texts),
             op_name=f"embed_batch ({turn_summary})",

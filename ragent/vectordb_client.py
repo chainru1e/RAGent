@@ -59,7 +59,8 @@ class QdrantStorage:
                 "chunk_id": meta.chunk_id,
                 "parent_id": meta.parent_id,
                 "file_path": meta.file_path,
-                "type": meta.type.value if isinstance(meta.type, Enum) else meta.type
+                "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
+                "context_prefix": meta.context_prefix,
             }
         )
 
@@ -86,7 +87,8 @@ class QdrantStorage:
                         "chunk_id": meta.chunk_id,
                         "parent_id": meta.parent_id,
                         "file_path": meta.file_path,
-                        "type": meta.type.value if isinstance(meta.type, Enum) else meta.type
+                        "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
+                        "context_prefix": meta.context_prefix,
                     }
                 )
             )
@@ -108,7 +110,8 @@ class QdrantStorage:
             chunk_id=payload.get("chunk_id"),
             parent_id=payload.get("parent_id"),
             file_path=payload.get("file_path"),
-            type=intent_type
+            type=intent_type,
+            context_prefix=payload.get("context_prefix"),
         )
         
         return Chunk(

@@ -37,6 +37,8 @@ MAX_CHUNK_SIZE = 1000
 
 RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
 
+ENABLE_CONTEXTUAL_RETRIEVAL = False
+
 def ensure_dirs() -> None:
     """Create required directories if they don't exist."""
     QDRANT_DIR.mkdir(parents=True, exist_ok=True)
