@@ -1,4 +1,5 @@
 import json
+import json_repair
 
 from ragent.config import RERANKING_MODEL
 from ragent.models.chunk import Chunk
@@ -132,6 +133,9 @@ class QueryTransformer:
             You are an expert in query transformation for Retrieval-Augmented Generation (RAG) and vector database search optimization.
             Your task is to analyze the user's raw input query and transform it into an optimized JSON format.
 
+            ### CRITICAL LANGUAGE RULE:
+            You MUST output the `rewritten` and `keywords` fields in the EXACT SAME LANGUAGE as the user's raw input.
+
             ### Instructions:
             1. **Decomposition:** Analyze if the user's input contains multiple distinct questions or topics. If so, break it down into separate, independent sub-queries. If it is a single topic, keep it as one query.
             2. **Rewriting:** For each resulting query, remove unnecessary conversational filler, emotional language, complaints, and ambiguous pronouns. Rewrite it into a clear, concise, and explicit search objective in the language of the original user query.
@@ -164,7 +168,7 @@ class QueryTransformer:
             """
             try:
                 response_text = self.llm_client.ask(query, temperature=0.0)
-                parsed_data = json.loads(response_text)
+                parsed_data = json_repair.loads(response_text)
                 queries = parsed_data.get("queries", [])
                 if not queries:
                     return [TransformedQuery(rewritten=query, keywords=[])]

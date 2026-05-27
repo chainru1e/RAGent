@@ -15,7 +15,8 @@ dependencies = [
     "llama-cpp-python[server]",
     "uvicorn",
     "openai",
-    "fastembed"
+    "fastembed",
+    "json-repair"
 ]
 
 [project.optional-dependencies]
