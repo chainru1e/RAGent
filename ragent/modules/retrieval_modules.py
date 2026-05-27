@@ -1,6 +1,5 @@
 from ragent.config import RERANKING_MODEL
 from ragent.models.chunk import Chunk
-from qdrant_client.models import Filter, FieldCondition, MatchValue
 from sentence_transformers import CrossEncoder
 
 def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1, min_chunks: int = 1) -> list[Chunk]:

@@ -6,6 +6,7 @@ import hashlib
 
 from ragent.models.chunk import Chunk, ChunkMetaData
 from ragent.models.parsed_message import NormalizedMessage
+from ragent.config import MAX_CHUNK_SIZE
 
 # =====================================================================
 # [ ASTChunkBuilder 지원 언어 추가 가이드 (예: C++) ]
@@ -41,7 +42,7 @@ class Chunker:
     def __init__(self):
         # ASTChunkBuilder 설정
         self.configs = {
-            "max_chunk_size": 1000,        # 청크당 최대 문자 수 (공백 제외)
+            "max_chunk_size": MAX_CHUNK_SIZE,        # 청크당 최대 문자 수 (공백 제외)
             "metadata_template": "default" # 메타데이터 템플릿 형식
         }
         self.builders_cache = {}
