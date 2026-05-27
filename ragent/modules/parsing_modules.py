@@ -154,9 +154,23 @@ class ClaudeCodeParser(BaseParser):
                     elif block_type == 'tool_use':
                         tool_name = block.get('name')
                         tool_input = block.get('input', {})
-                        text_content += f"[{tool_name}]\n"
-                        for val in tool_input.values():
-                            text_content += f"{val}\n"
+                        if tool_name == 'Edit':
+                            # Edit 는 키 이름을 명시해 꺼내 [Edit]\n<file_path>\n<new_string>
+                            # 형태로 직렬화한다. Write 와 동일한 3줄 모양이라 청커가
+                            # 그대로 재사용한다. file_path / new_string 키가 없으면
+                            # 불완전한 [Edit] 라인을 만들지 않고 블록을 skip 한다.
+                            if (
+                                isinstance(tool_input, dict)
+                                and 'file_path' in tool_input
+                                and 'new_string' in tool_input
+                            ):
+                                text_content += (
+                                    f"[Edit]\n{tool_input['file_path']}\n{tool_input['new_string']}\n"
+                                )
+                        else:
+                            text_content += f"[{tool_name}]\n"
+                            for val in tool_input.values():
+                                text_content += f"{val}\n"
 
         if text_content.strip():
             return NormalizedMessage(
