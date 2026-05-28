@@ -141,7 +141,9 @@ class Chunker:
             if content.startswith("[text]"):
                 pure_text = content.replace("[text]", "", 1).strip()
                 context_text += f"[{role}] {pure_text}\n"
-            elif role == "ASSISTANT" and content.startswith("[Write]"):
+            elif role == "ASSISTANT" and (
+                content.startswith("[Write]") or content.startswith("[Edit]")
+            ):
                 # 줄바꿈 단위로 쪼개서 파일명과 코드를 분리
                 lines = content.split("\n")
                 

@@ -111,8 +111,8 @@ def _clean_prefix(raw: str) -> str:
 class ContextualEnricher:
     """코드 청크 앞에 붙일 맥락 문장을 LLM 으로 생성한다."""
 
-    def __init__(self, llm_client: LLMClient):
-        self.llm_client = llm_client
+    def __init__(self):
+        self.llm_client = LLMClient(system_prompt=SYSTEM_PROMPT)
 
     def generate_prefix(self, source_turn_text: str, chunk_text: str) -> str | None:
         """단일 청크에 대한 맥락 문장을 생성한다.
