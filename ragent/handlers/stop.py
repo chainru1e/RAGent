@@ -31,7 +31,7 @@ def handle(data: dict) -> None:
             "session_id": session_id,
             "transcript_path": transcript_path,
         },
-        timeout=30.0,
+        timeout=5.0,
     )
     if response is None:
         return

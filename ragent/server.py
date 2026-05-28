@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
+import threading
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import RLock
@@ -40,16 +42,46 @@ class RAGentServer:
         self.contextual_enricher = ContextualEnricher()
         self._vectordb_cache: dict[str, QdrantStorage] = {}
         self._lock = RLock()
+        self._save_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._save_worker_thread = threading.Thread(
+            target=self._save_worker,
+            name="ragent-save-worker",
+            daemon=True,
+        )
+        self._save_worker_thread.start()
 
-    def save(self, request: dict[str, Any]) -> dict[str, Any]:
+    def enqueue_save(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Validate the request and put it on the save queue. Returns immediately.
+
+        The single save worker drains the queue serially so the in-process
+        embedding model (not thread-safe) and the local LLM (HTTP-serialized
+        anyway) are never hit concurrently.
+        """
         session_id = request.get("session_id", "")
         transcript_path = request.get("transcript_path", "")
 
         if not session_id:
-            return {"ok": False, "indexed": 0, "reason": "missing_session_id"}
+            return {"ok": False, "queued": False, "reason": "missing_session_id"}
 
         if not transcript_path:
-            return {"ok": False, "indexed": 0, "reason": "missing_transcript_path"}
+            return {"ok": False, "queued": False, "reason": "missing_transcript_path"}
+
+        self._save_queue.put(request)
+        return {"ok": True, "queued": True, "pending": self._save_queue.qsize()}
+
+    def _save_worker(self) -> None:
+        while True:
+            request = self._save_queue.get()
+            try:
+                self._process_save(request)
+            except Exception:
+                logger.exception("Save worker: unhandled error for %s", request)
+            finally:
+                self._save_queue.task_done()
+
+    def _process_save(self, request: dict[str, Any]) -> None:
+        session_id = request.get("session_id", "")
+        transcript_path = request.get("transcript_path", "")
 
         with self._lock:
             parser = self._build_parser(transcript_path)
@@ -57,7 +89,7 @@ class RAGentServer:
 
             if not last_turn:
                 logger.warning("Save: no turns found in transcript %s", transcript_path)
-                return {"ok": True, "indexed": 0, "reason": "no_turn_found"}
+                return
 
             vectordb = self._get_vectordb(transcript_path)
             count = index_turn(
@@ -75,7 +107,6 @@ class RAGentServer:
             )
 
         logger.info("Save: indexed %d chunks for session %s", count, session_id)
-        return {"ok": True, "indexed": count}
 
     def search(self, request: dict[str, Any]) -> dict[str, Any]:
         session_id = request.get("session_id", "")
@@ -124,8 +155,8 @@ class RAGentServer:
                     body = self._read_json()
 
                     if self.path == "/save":
-                        response = app.save(body)
-                        self._write_json(200, response)
+                        response = app.enqueue_save(body)
+                        self._write_json(202, response)
                         return
 
                     if self.path == "/search":
