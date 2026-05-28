@@ -25,181 +25,221 @@ from ragent.config import MAX_CHUNK_SIZE
 #        self.parser = ts.Parser(ts.Language(tscpp.language()))
 # =====================================================================
 
+
 class Chunker:
     """
     단일 대화 턴 데이터를 청킹 처리하는 클래스.
 
-    - 내부적으로 tree-sitter 파서를 사용하므로, 필요한 파서 바이너리를 
+    - 내부적으로 tree-sitter 파서를 사용하므로, 필요한 파서 바이너리를
     추가 설치하여 지원 언어를 유연하게 확장할 수 있다.
+    - Edit 처리 시 VectorDB를 주입받아 기존 청크 버전 관리를 수행한다.
 
     Attributes:
-        configs (dict): ASTChunkBuilder 설정값(청크 크기, 메타데이터 템플릿 등)을 담은 딕셔너리.
-        builders_cache (dict): 언어별로 생성된 ASTChunkBuilder 인스턴스를 재사용하기 위한 캐시.
+        configs (dict): ASTChunkBuilder 설정값을 담은 딕셔너리.
+        builders_cache (dict): 언어별로 생성된 ASTChunkBuilder 인스턴스 캐시.
+        storage: QdrantStorage 인스턴스 (Edit 처리 시 버전 조회/Soft Delete용).
+                 None이면 Edit도 Write처럼 처리한다.
     """
 
     UUID_NAMESPACE = uuid.NAMESPACE_OID
 
-    def __init__(self):
-        # ASTChunkBuilder 설정
+    def __init__(self, storage=None):
         self.configs = {
-            "max_chunk_size": MAX_CHUNK_SIZE,        # 청크당 최대 문자 수 (공백 제외)
-            "metadata_template": "default" # 메타데이터 템플릿 형식
+            "max_chunk_size": MAX_CHUNK_SIZE,
+            "metadata_template": "default"
         }
         self.builders_cache = {}
+        self.storage = storage  # 추가: QdrantStorage 의존성 주입
 
     def _get_language_from_filename(self, file_path: str) -> str | None:
-        """
-        파일 경로에서 확장자를 추출하여 ASTChunkBuilder용 언어 이름을 반환합니다.
-        
-        Args:
-            file_path (str): 확장자를 검사할 파일의 경로.
-
-        Returns:
-            str|None: 파서가 지원하는 언어 이름 문자열.
-                      지원하지 않는 확장자이거나 확장자가 없는 경우 None을 반환한다.
-
-        Notes:
-            - 현재 지원 언어: Python (.py), Java (.java), C# (.cs), TypeScript (.ts), JavaScript (.js)
-        """
         _, ext = os.path.splitext(file_path)
         ext = ext.lower()
-        
-        # astchunk 지원 언어 매핑
         ext_to_lang = {
             ".py": "python",
             ".java": "java",
             ".cs": "csharp",
             ".ts": "typescript",
-            ".js": "typescript"  # 통상적으로 js도 ts 파서로 처리 가능
+            ".js": "typescript"
         }
-        return ext_to_lang.get(ext) # 지원하지 않는 확장자면 None 반환
+        return ext_to_lang.get(ext)
 
     def _get_or_create_builder(self, language: str) -> ASTChunkBuilder:
-        """
-        주어진 언어에 대한 ASTChunkBuilder 인스턴스를 반환한다. (싱글톤 패턴 활용)
-
-        언어별로 구문 분석기(Parser)를 초기화하는 비용을 줄이기 위해, 이미 생성된 
-        빌더가 있다면 builders_cache에서 꺼내어 재사용한다. 
-        캐시에 없다면 기본 설정을 복사하여 해당 언어의 빌더를 새로 생성하고 캐시에 저장한다.
-
-        Args:
-            language (str): 빌더를 생성할 언어 이름 (예: "python", "java").
-
-        Returns:
-            ASTChunkBuilder: 해당 언어를 파싱할 수 있도록 구성된 청크 빌더 인스턴스.
-        """
         if language not in self.builders_cache:
-            # 해당 언어의 빌더가 처음 요청된 경우 새로 생성
             configs = self.configs.copy()
             configs["language"] = language
             self.builders_cache[language] = ASTChunkBuilder(**configs)
-            
         return self.builders_cache[language]
-    
-    def _extract_turn_components(self, turn_data: list[NormalizedMessage]) -> tuple[Chunk, list[Chunk]]:
+
+    def _extract_func_name_from_ast(self, code: str, language: str) -> str | None:
         """
-        하나의 대화 턴에서 문맥 텍스트와 코드 블록을 분리 추출하고, 이를 `Chunk` 객체로 포장한다.
+        코드 조각에서 AST를 이용해 최상위 함수/클래스 이름을 추출한다.
 
-        이 함수는 turn_data에 포함된 메시지들을 순회하면서 다음 두 가지를 만든다.
-        1. context_chunk: [text] 태그가 붙은 일반 대화 텍스트를 역할 정보와 함께 누적한 문맥(부모) 청크
-        2. code_chunks: ASSISTANT의 [Write] 메시지에서 파일 경로와 코드 본문을 추출하여 조립한 코드(자식) 청크 리스트
-
-        turn_data에 포함된 메시지 전체 내용을 해시(Hash)하여 결정론적인 고유 UUID5(id)를 생성하고,
-        이를 통해 문맥과 코드를 하나로 묶는 데이터 계층 구조의 기반을 마련한다.
-        (동일한 대화 턴이 입력되면 항상 같은 ID를 보장하여 데이터 중복을 방지한다.)
-
-        처리 규칙:
-        - 각 메시지의 role은 기본값 unknown으로 읽고 대문자로 정규화한다.
-        - content가 [text]로 시작하면 태그를 제거해 context_text에 추가한다.
-        - role이 ASSISTANT이고 content가 [Write]로 시작하면 파일 경로와 코드 본문을 파싱한다.
-        - 파싱된 코드는 `ChunkMetadata`가 부여된 독립적인 `Chunk` 객체로 조립되어 리스트에 추가된다.
-        - 루프 종료 후, context_text 또한 `ChunkMetadata`가 부여된 단일 `Chunk`객체로 조립된다.
+        ASTChunkBuilder로 청킹한 결과의 첫 번째 청크 이름을 사용한다.
+        추출에 실패하면 None을 반환한다.
 
         Args:
-            turn_data (list[NormalizedMessage]): 한 턴에 속한 정규화 메시지 객체 목록.
-                각 원소는 role, content 속성을 가진다.
+            code (str): 함수/클래스 단위의 코드 조각.
+            language (str): 파싱할 언어 이름.
 
         Returns:
-           context_chunk,code_chunks (tuple[chunk,list[chunk]]):
-                - context_chunk (Chunk): 누적된 문맥 문자열을 담고 있는 청크 객체
-                - code_chunks (list[chunk]): 추출된 개별 코드 블록들을 담고 있는 청크 객체 리스트
+            str | None: 추출된 함수/클래스 이름. 실패 시 None.
 
         Notes:
-            - 형식이 맞지 않는 메시지는 건너뛰도록 설계되어 있다.
+            - astchunk의 반환 딕셔너리에 "name" 키가 있으면 이를 사용한다.
+            - 없을 경우 코드 첫 줄에서 def/class 키워드로 이름을 파싱한다.
+        """
+        try:
+            builder = self._get_or_create_builder(language)
+            chunks = builder.chunkify(code)
+            if chunks:
+                # astchunk가 "name" 키를 제공하는 경우
+                if "name" in chunks[0]:
+                    return chunks[0]["name"]
+
+            # fallback: 첫 줄에서 직접 파싱 (def login(...) → "login")
+            first_line = code.strip().splitlines()[0]
+            for keyword in ("def ", "class ", "function ", "func "):
+                if keyword in first_line:
+                    after = first_line.split(keyword, 1)[1]
+                    name = after.split("(")[0].split(":")[0].strip()
+                    return name if name else None
+        except Exception:
+            pass
+        return None
+
+    def _extract_turn_components(self, turn_data: list[NormalizedMessage]) -> tuple[Chunk, list[Chunk], list[bool]]:
+        """
+        하나의 대화 턴에서 문맥 텍스트와 코드 블록을 분리 추출하고, 이를 Chunk 객체로 포장한다.
+
+        기존 동작에서 [Edit] 태그 여부를 is_edit 플래그로 구분하여 함께 반환한다.
+
+        Returns:
+            context_chunk, code_chunks, is_edit_flags (tuple):
+                - context_chunk (Chunk): 누적된 문맥 청크
+                - code_chunks (list[Chunk]): 코드 청크 리스트
+                - is_edit_flags (list[bool]): 각 코드 청크가 Edit인지 여부
         """
         context_text = ""
         code_chunks = []
+        is_edit_flags = []  # 추가: 각 코드 청크의 Edit 여부
 
         combined_content = "".join([f"{msg.role}:{msg.content}" for msg in turn_data])
         content_hash = hashlib.sha256(combined_content.encode('utf-8')).hexdigest()
         id = str(uuid.uuid5(self.UUID_NAMESPACE, content_hash))
 
         for msg in turn_data:
-            role = msg.role.upper() # USER 또는 ASSISTANT
+            role = msg.role.upper()
             content = msg.content.strip()
 
             if content.startswith("[text]"):
                 pure_text = content.replace("[text]", "", 1).strip()
                 context_text += f"[{role}] {pure_text}\n"
-            elif role == "ASSISTANT" and (
-                content.startswith("[Write]") or content.startswith("[Edit]")
-            ):
-                # 줄바꿈 단위로 쪼개서 파일명과 코드를 분리
+
+            elif role == "ASSISTANT" and content.startswith("[Write]"):
                 lines = content.split("\n")
-                
-                # lines[0] : "[Write]"
-                # lines[1] : 파일 경로
-                # lines[2:]: 실제 코드 내용
                 if len(lines) >= 2:
                     file_path = lines[1].strip()
                     code_content = "\n".join(lines[2:]).strip()
                     if code_content:
-                        code_metadata = ChunkMetaData(
-                            parent_id=id,
-                            file_path=file_path
-                        )
+                        code_metadata = ChunkMetaData(parent_id=id, file_path=file_path)
                         code_chunks.append(Chunk(code_metadata, code_content))
-        
+                        is_edit_flags.append(False)  # Write
+
+            elif role == "ASSISTANT" and content.startswith("[Edit]"):
+                lines = content.split("\n")
+                if len(lines) >= 2:
+                    file_path = lines[1].strip()
+                    code_content = "\n".join(lines[2:]).strip()
+                    if code_content:
+                        code_metadata = ChunkMetaData(parent_id=id, file_path=file_path)
+                        code_chunks.append(Chunk(code_metadata, code_content))
+                        is_edit_flags.append(True)   # Edit
+
         context_metadata = ChunkMetaData(chunk_id=id)
         context_chunk = Chunk(context_metadata, context_text)
-        return context_chunk, code_chunks
+        return context_chunk, code_chunks, is_edit_flags
 
-    def _split_code_by_ast(self, code_chunks: list[Chunk]) -> list[Chunk]:
+    def _split_code_by_ast(
+        self,
+        code_chunks: list[Chunk],
+        is_edit_flags: list[bool]
+    ) -> list[Chunk]:
         """
-        코드 `Chunk` 객체 리스트를 받아 AST 파서를 이용해 심화 청킹을 수행한다.
+        코드 Chunk 리스트를 AST 파서로 함수/클래스 단위로 세분화하고,
+        func_name / is_latest / version 메타데이터를 결정한다.
 
-        입력된 각 `Chunk` 객체의 metadata.file_path 확장자를 검사하여 지원하는 언어인 경우,
-        해당 언어의 ASTChunkBuilder를 사용하여 코드를 함수, 클래스 등의 의미 단위로 쪼갠다.
-        지원하지 않는 언어거나 확장자를 알 수 없는 경우 `Chunk` 객체를 그대로 유지한다.
+        [Write] 청크:
+            - func_name: AST에서 추출
+            - is_latest: True
+            - version: 1
+
+        [Edit] 청크:
+            - func_name: AST에서 추출
+            - storage가 있으면 기존 버전 조회 후 Soft Delete
+            - is_latest: True
+            - version: 기존 버전 + 1 (없으면 1)
 
         Args:
-            code_blocks (list[Chunk]): 원본 코드 블록 리스트. 
+            code_chunks (list[Chunk]): 원본 코드 청크 리스트.
+            is_edit_flags (list[bool]): 각 청크의 Edit 여부.
 
         Returns:
-            list[Chunk]: AST 기반으로 세분화된 코드 `Chunk` 객체 리스트.
-                하나의 원본 `Chunk` 객체가 의미 단위의 여러 `Chunk` 객체로 쪼개질 수 있으며, 
-                쪼개진 모든 객체는 기존 객체의 메타데이터를 보존한 채로 반환된다.
+            list[Chunk]: 메타데이터가 완성된 세분화 코드 청크 리스트.
         """
         refined_chunks = []
-        for original_chunk in code_chunks:
+
+        for original_chunk, is_edit in zip(code_chunks, is_edit_flags):
             file_path = original_chunk.metadata.file_path
             raw_code = original_chunk.payload
-
             lang = self._get_language_from_filename(file_path)
 
             if lang:
                 builder = self._get_or_create_builder(lang)
                 ast_chunks = builder.chunkify(raw_code)
+
                 for ast_chunk_data in ast_chunks:
                     new_metadata = copy.copy(original_chunk.metadata)
-                    new_chunk = Chunk(
-                        metadata=new_metadata,
-                        payload=ast_chunk_data["content"]
-                    )
+                    code_piece = ast_chunk_data["content"]
+
+                    # func_name 추출
+                    func_name = None
+                    if "name" in ast_chunk_data:
+                        # astchunk가 직접 제공하는 경우
+                        func_name = ast_chunk_data["name"]
+                    else:
+                        # fallback: 코드에서 직접 파싱
+                        func_name = self._extract_func_name_from_ast(code_piece, lang)
+
+                    new_metadata.func_name = func_name
+
+                    if is_edit and self.storage and func_name:
+                        # Edit 처리: 기존 버전 조회 → Soft Delete → 새 버전 세팅
+                        current_version = self.storage.get_latest_version(file_path, func_name)
+
+                        if current_version is not None:
+                            # 기존 청크를 is_latest: False로 변경
+                            self.storage.mark_outdated(file_path, func_name)
+                            new_metadata.version = current_version + 1
+                        else:
+                            # DB에 없는 함수 → Write처럼 처리
+                            new_metadata.version = 1
+
+                        new_metadata.is_latest = True
+
+                    else:
+                        # Write 처리 또는 storage 없음
+                        new_metadata.is_latest = True
+                        new_metadata.version = 1
+
+                    new_chunk = Chunk(metadata=new_metadata, payload=code_piece)
                     refined_chunks.append(new_chunk)
+
             else:
+                # 지원하지 않는 언어: 메타데이터 기본값 유지
+                original_chunk.metadata.is_latest = True
+                original_chunk.metadata.version = 1
                 refined_chunks.append(original_chunk)
-        
+
         return refined_chunks
 
     def process_turn(self, turn_data: list[NormalizedMessage]) -> list[Chunk]:
@@ -207,25 +247,22 @@ class Chunker:
         단일 대화 턴 데이터를 청킹하여 Chunk 리스트를 반환한다.
 
         파이프라인:
-        1. 객체 초기 포장 (`extract_turn_components`): 
-           원시 데이터를 분석하여 고유 식별자(parent_id)를 발급하고, 
-           문맥과 코드를 각각 완벽한 `Chunk` 객체(부모-자식)로 생성한다.
-        2. 의미론적 세분화 (`split_code_by_ast`): 
-           코드 `Chunk` 객체들을 기존 메타데이터를 유지한 채 AST 기반으로 쪼갠다.
-        3. 객체 병합 및 전달: 
-           단일 맥락 청크 1개와 세분화된 코드 청크들을 하나의 리스트로 묶어 즉시 반환한다.
+        1. 객체 초기 포장: 문맥/코드 분리, Edit 플래그 발급
+        2. 의미론적 세분화: AST 청킹 + func_name/버전 메타데이터 결정
+        3. chunk_id 부여 후 병합 반환
 
         Args:
-            turn_data (list[NormalizedMessage]): 파서를 통해 추출된 1턴 분량의 정규화 메시지 객체 리스트.
+            turn_data (list[NormalizedMessage]): 1턴 분량의 정규화 메시지 리스트.
 
         Returns:
-            list[Chunk]: 처리가 완료된 최종 Chunk 객체들의 리스트. 
-                         (항상 인덱스 0에는 맥락 청크가 위치하며, 이어서 코드 청크들이 배치된다.)
+            list[Chunk]: 처리 완료된 Chunk 리스트.
+                         인덱스 0: 맥락 청크, 이후: 코드 청크.
         """
-        context_chunk, code_chunks = self._extract_turn_components(turn_data)
-        refined_code_chunks = self._split_code_by_ast(code_chunks)
-        # 최종적으로 쪼개진 결과에 chunk_id 부여
+        context_chunk, code_chunks, is_edit_flags = self._extract_turn_components(turn_data)
+        refined_code_chunks = self._split_code_by_ast(code_chunks, is_edit_flags)
+
         parent_id = context_chunk.metadata.chunk_id
         for i, chunk in enumerate(refined_code_chunks):
             chunk.metadata.chunk_id = str(uuid.uuid5(self.UUID_NAMESPACE, f"{parent_id}_code_{i}"))
+
         return [context_chunk] + refined_code_chunks
