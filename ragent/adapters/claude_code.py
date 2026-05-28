@@ -23,10 +23,16 @@ class ClaudeCodeAdapter(BaseAdapter):
 
     def _resolve_event_kind(self, data: dict) -> str:
         event = data.get("hook_event_name", "")
+        tool_name = data.get("tool_name", "")
         return {
             "UserPromptSubmit": "prompt",
             "Stop": "response",
-        }.get(event, "unknown")
+        }.get(
+            event,
+            "file_changed"
+            if event == "PostToolUse" and tool_name in {"Edit", "Write", "MultiEdit"}
+            else "unknown",
+        )
 
     def on_prompt(self, data: dict) -> None:
         from ragent.handlers.user_prompt_submit import handle
@@ -64,6 +70,12 @@ class ClaudeCodeAdapter(BaseAdapter):
             ],
             "Stop": [
                 {"hooks": [{"type": "command", "command": cmd, "timeout": 600}]}
+            ],
+            "PostToolUse": [
+                {
+                    "matcher": "Edit|Write|MultiEdit",
+                    "hooks": [{"type": "command", "command": cmd, "timeout": 5}],
+                }
             ],
         }
 

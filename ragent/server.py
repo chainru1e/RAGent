@@ -14,6 +14,7 @@ import queue
 import threading
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import RLock
 from typing import Any
 
@@ -23,7 +24,7 @@ from ragent.models.chunk import Chunk
 from ragent.modules.chunking_modules import Chunker
 from ragent.modules.contextual_retrieval_modules import ContextualEnricher
 from ragent.modules.embedding_modules import HybridEmbedding
-from ragent.modules.indexing_modules import index_turn
+from ragent.modules.indexing_modules import index_file_snapshot, index_turn
 from ragent.modules.intent_classifying_modules import IntentClassifier
 from ragent.modules.retrieval_modules import Retriever
 from ragent.vectordb_client import QdrantStorage
@@ -73,7 +74,10 @@ class RAGentServer:
         while True:
             request = self._save_queue.get()
             try:
-                self._process_save(request)
+                if request.get("_kind") == "file_changed":
+                    self._process_file_changed(request)
+                else:
+                    self._process_save(request)
             except Exception:
                 logger.exception("Save worker: unhandled error for %s", request)
             finally:
@@ -92,9 +96,11 @@ class RAGentServer:
                 return
 
             vectordb = self._get_vectordb(transcript_path)
+            workspace_id = self._workspace_id_from_transcript(transcript_path)
             count = index_turn(
                 turn=last_turn,
                 session_id=session_id,
+                workspace_id=workspace_id,
                 chunker=self.chunker,
                 intent_classifier=self.intent_classifier,
                 embedder=self.embedder,
@@ -107,6 +113,59 @@ class RAGentServer:
             )
 
         logger.info("Save: indexed %d chunks for session %s", count, session_id)
+
+    def enqueue_file_changed(self, request: dict[str, Any]) -> dict[str, Any]:
+        session_id = request.get("session_id", "")
+        paths = request.get("paths") or []
+
+        if not session_id:
+            return {"ok": False, "queued": False, "reason": "missing_session_id"}
+
+        if not isinstance(paths, list) or not paths:
+            return {"ok": False, "queued": False, "reason": "missing_paths"}
+
+        request = dict(request)
+        request["_kind"] = "file_changed"
+        self._save_queue.put(request)
+        return {"ok": True, "queued": True, "pending": self._save_queue.qsize()}
+
+    def _process_file_changed(self, request: dict[str, Any]) -> None:
+        session_id = request.get("session_id", "")
+        transcript_path = request.get("transcript_path", "")
+        workspace_root = request.get("workspace_root", "")
+        paths = request.get("paths") or []
+
+        collection_name = (
+            self._collection_name_from_transcript(transcript_path)
+            if transcript_path
+            else self._collection_name_from_workspace(workspace_root)
+        )
+        workspace_id = collection_name
+        vectordb = self._get_vectordb_by_collection(collection_name)
+        root = Path(workspace_root).resolve() if workspace_root else None
+
+        with self._lock:
+            total = 0
+            for raw_path in paths:
+                if not isinstance(raw_path, str) or not raw_path.strip():
+                    continue
+                absolute_path, relative_path = self._resolve_changed_path(raw_path, root)
+                total += index_file_snapshot(
+                    absolute_path=str(absolute_path),
+                    relative_path=relative_path,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    chunker=self.chunker,
+                    embedder=self.embedder,
+                    vectordb=vectordb,
+                )
+
+        logger.info(
+            "FileChanged: indexed %d snapshot chunks across %d paths for session %s",
+            total,
+            len(paths),
+            session_id,
+        )
 
     def search(self, request: dict[str, Any]) -> dict[str, Any]:
         session_id = request.get("session_id", "")
@@ -128,7 +187,14 @@ class RAGentServer:
                 vectordb=vectordb,
                 embedder=self.embedder,
             )
-            chunks = retriever.retrieve(prompt)
+            workspace_id = self._workspace_id_from_transcript(transcript_path)
+            chunks = retriever.retrieve(
+                prompt,
+                workspace_id=workspace_id,
+                mode=request.get("mode", "current_code"),
+                file_path=request.get("file_path"),
+                snapshot_version=request.get("snapshot_version"),
+            )
 
         logger.info("Search: retrieved %d chunks for session %s", len(chunks), session_id)
         return {
@@ -162,6 +228,11 @@ class RAGentServer:
                     if self.path == "/search":
                         response = app.search(body)
                         self._write_json(200, response)
+                        return
+
+                    if self.path == "/file_changed":
+                        response = app.enqueue_file_changed(body)
+                        self._write_json(202, response)
                         return
 
                     self._write_json(404, {"ok": False, "error": "not_found"})
@@ -200,6 +271,14 @@ class RAGentServer:
         collection_name = os.path.basename(os.path.dirname(transcript_path))
         return collection_name or "default"
 
+    def _workspace_id_from_transcript(self, transcript_path: str) -> str:
+        return self._collection_name_from_transcript(transcript_path)
+
+    def _collection_name_from_workspace(self, workspace_root: str) -> str:
+        if not workspace_root:
+            return "default"
+        return os.path.basename(os.path.abspath(workspace_root)) or "default"
+
     def _build_parser(self, transcript_path: str):
         from ragent.adapters import get_adapter
 
@@ -210,11 +289,26 @@ class RAGentServer:
 
     def _get_vectordb(self, transcript_path: str) -> QdrantStorage:
         collection_name = self._collection_name_from_transcript(transcript_path)
+        return self._get_vectordb_by_collection(collection_name)
 
+    def _get_vectordb_by_collection(self, collection_name: str) -> QdrantStorage:
         if collection_name not in self._vectordb_cache:
             self._vectordb_cache[collection_name] = QdrantStorage(collection_name)
 
         return self._vectordb_cache[collection_name]
+
+    def _resolve_changed_path(self, raw_path: str, root: Path | None) -> tuple[Path, str]:
+        path = Path(raw_path)
+        absolute_path = path if path.is_absolute() else ((root or Path.cwd()) / path)
+        absolute_path = absolute_path.resolve()
+        if root is not None:
+            try:
+                relative_path = absolute_path.relative_to(root).as_posix()
+            except ValueError:
+                relative_path = path.as_posix()
+        else:
+            relative_path = path.as_posix() if not path.is_absolute() else path.name
+        return absolute_path, relative_path
 
     def _format_context_for_claude(self, chunks: list[Chunk]) -> str:
         if not chunks:
@@ -240,6 +334,14 @@ class RAGentServer:
             "parent_id": chunk.metadata.parent_id,
             "file_path": chunk.metadata.file_path,
             "type": chunk_type,
+            "workspace_id": chunk.metadata.workspace_id,
+            "source_kind": chunk.metadata.source_kind,
+            "snapshot_id": chunk.metadata.snapshot_id,
+            "snapshot_version": chunk.metadata.snapshot_version,
+            "is_current": chunk.metadata.is_current,
+            "indexed_at": chunk.metadata.indexed_at,
+            "content_hash": chunk.metadata.content_hash,
+            "language": chunk.metadata.language,
             "payload": chunk.payload,
         }
 

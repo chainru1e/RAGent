@@ -155,17 +155,21 @@ class ClaudeCodeParser(BaseParser):
                         tool_name = block.get('name')
                         tool_input = block.get('input', {})
                         if tool_name == 'Edit':
-                            # Edit 는 키 이름을 명시해 꺼내 [Edit]\n<file_path>\n<new_string>
-                            # 형태로 직렬화한다. Write 와 동일한 3줄 모양이라 청커가
-                            # 그대로 재사용한다. file_path / new_string 키가 없으면
-                            # 불완전한 [Edit] 라인을 만들지 않고 블록을 skip 한다.
+                            # Edit 의 new_string 은 최종 파일 전체가 아니므로 코드
+                            # 청크로 저장하지 않는다. 성공한 편집의 최신 코드는
+                            # PostToolUse -> file_snapshot 경로에서 실제 파일을
+                            # 다시 읽어 색인하고, transcript 에서는 작업 이력 텍스트로만
+                            # 남긴다.
                             if (
                                 isinstance(tool_input, dict)
                                 and 'file_path' in tool_input
                                 and 'new_string' in tool_input
                             ):
                                 text_content += (
-                                    f"[Edit]\n{tool_input['file_path']}\n{tool_input['new_string']}\n"
+                                    "[text]\n"
+                                    "[tool:Edit]\n"
+                                    f"file_path: {tool_input['file_path']}\n"
+                                    f"new_string:\n{tool_input['new_string']}\n"
                                 )
                         else:
                             text_content += f"[{tool_name}]\n"

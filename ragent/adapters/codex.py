@@ -38,10 +38,16 @@ class CodexAdapter(BaseAdapter):
 
     def _resolve_event_kind(self, data: dict) -> str:
         event = data.get("hook_event_name", "")
+        tool_name = data.get("tool_name", "")
         return {
             "UserPromptSubmit": "prompt",
             "Stop": "response",
-        }.get(event, "unknown")
+        }.get(
+            event,
+            "file_changed"
+            if event == "PostToolUse" and tool_name == "apply_patch"
+            else "unknown",
+        )
 
     def on_prompt(self, data: dict) -> None:
         from ragent.handlers.user_prompt_submit import handle
@@ -81,6 +87,12 @@ class CodexAdapter(BaseAdapter):
             ],
             "Stop": [
                 {"hooks": [{"type": "command", "command": cmd, "timeout": 600}]}
+            ],
+            "PostToolUse": [
+                {
+                    "matcher": "apply_patch",
+                    "hooks": [{"type": "command", "command": cmd, "timeout": 5}],
+                }
             ],
         }
 

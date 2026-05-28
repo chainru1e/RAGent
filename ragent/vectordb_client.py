@@ -4,8 +4,11 @@ from enum import Enum
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    FieldCondition,
+    Filter,
     Fusion,
     FusionQuery,
+    MatchValue,
     PointStruct,
     Prefetch,
     SparseVectorParams,
@@ -42,6 +45,50 @@ class QdrantStorage:
                 },
             )
             logger.info("Created collection: %s", self.collection_name)
+        self._ensure_payload_indexes()
+
+    def _ensure_payload_indexes(self) -> None:
+        for field_name, field_schema in (
+            ("workspace_id", "keyword"),
+            ("source_kind", "keyword"),
+            ("file_path", "keyword"),
+            ("is_current", "bool"),
+            ("snapshot_id", "keyword"),
+            ("snapshot_version", "integer"),
+            ("indexed_at", "keyword"),
+            ("type", "keyword"),
+        ):
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                )
+            except Exception:
+                logger.debug(
+                    "Payload index already exists or cannot be created: %s.%s",
+                    self.collection_name,
+                    field_name,
+                )
+
+    def _payload_from_chunk(self, chunk: Chunk) -> dict:
+        meta = chunk.metadata
+        return {
+            "text": chunk.payload,
+            "chunk_id": meta.chunk_id,
+            "parent_id": meta.parent_id,
+            "file_path": meta.file_path,
+            "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
+            "context_prefix": meta.context_prefix,
+            "workspace_id": meta.workspace_id,
+            "source_kind": meta.source_kind,
+            "snapshot_id": meta.snapshot_id,
+            "snapshot_version": meta.snapshot_version,
+            "is_current": meta.is_current,
+            "indexed_at": meta.indexed_at,
+            "content_hash": meta.content_hash,
+            "language": meta.language,
+        }
 
     def add_point(self, chunk: Chunk):
         meta = chunk.metadata
@@ -54,14 +101,7 @@ class QdrantStorage:
                 "dense_long": vector.dense.tolist(),
                 "sparse": vector.sparse  # SparseVector 객체
             },
-            payload={
-                "text": chunk.payload,
-                "chunk_id": meta.chunk_id,
-                "parent_id": meta.parent_id,
-                "file_path": meta.file_path,
-                "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
-                "context_prefix": meta.context_prefix,
-            }
+            payload=self._payload_from_chunk(chunk)
         )
 
         self.client.upsert(self.collection_name, [point])
@@ -82,14 +122,7 @@ class QdrantStorage:
                         "dense_long": vector.dense.tolist(),
                         "sparse": vector.sparse
                     },
-                    payload={
-                        "text": chunk.payload,
-                        "chunk_id": meta.chunk_id,
-                        "parent_id": meta.parent_id,
-                        "file_path": meta.file_path,
-                        "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
-                        "context_prefix": meta.context_prefix,
-                    }
+                    payload=self._payload_from_chunk(chunk)
                 )
             )
 
@@ -112,6 +145,14 @@ class QdrantStorage:
             file_path=payload.get("file_path"),
             type=intent_type,
             context_prefix=payload.get("context_prefix"),
+            workspace_id=payload.get("workspace_id"),
+            source_kind=payload.get("source_kind") or "conversation",
+            snapshot_id=payload.get("snapshot_id"),
+            snapshot_version=payload.get("snapshot_version"),
+            is_current=payload.get("is_current"),
+            indexed_at=payload.get("indexed_at"),
+            content_hash=payload.get("content_hash"),
+            language=payload.get("language"),
         )
         
         return Chunk(
@@ -120,7 +161,12 @@ class QdrantStorage:
             vector=None 
         )
 
-    def staged_hybrid_search(self, query_vectors: list[HybridVector], limit: int = 5) -> list[Chunk]:
+    def staged_hybrid_search(
+        self,
+        query_vectors: list[HybridVector],
+        limit: int = 5,
+        query_filter: Filter | None = None,
+    ) -> list[Chunk]:
         """
         여러 개의 서브 쿼리에 대해 2단계 dense 검색과 sparse 검색을 각각 생성하고,
         이 모든 검색 결과를 단 한 번의 RRF 연산으로 융합하는 다중 하이브리드 검색을 수행한다.
@@ -172,6 +218,7 @@ class QdrantStorage:
             collection_name=self.collection_name,
             prefetch=prefetch_branches,
             query=FusionQuery(fusion=Fusion.RRF),
+            query_filter=query_filter,
             limit=limit,
             with_payload=True
         )
@@ -179,6 +226,110 @@ class QdrantStorage:
         chunks = [self.payload_to_chunk(point.payload) for point in results.points]
         logger.debug("Hybrid search returned %d results from collection %s", len(chunks), self.collection_name)
         return chunks
+
+    def build_filter(
+        self,
+        *,
+        workspace_id: str | None = None,
+        source_kind: str | None = None,
+        file_path: str | None = None,
+        is_current: bool | None = None,
+        snapshot_id: str | None = None,
+        snapshot_version: int | None = None,
+    ) -> Filter | None:
+        conditions = []
+        for key, value in (
+            ("workspace_id", workspace_id),
+            ("source_kind", source_kind),
+            ("file_path", file_path),
+            ("is_current", is_current),
+            ("snapshot_id", snapshot_id),
+            ("snapshot_version", snapshot_version),
+        ):
+            if value is not None:
+                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+        if not conditions:
+            return None
+        return Filter(must=conditions)
+
+    def deactivate_current_snapshots(self, *, workspace_id: str, file_path: str) -> int:
+        point_ids = self._point_ids_by_filter(
+            self.build_filter(
+                workspace_id=workspace_id,
+                source_kind="file_snapshot",
+                file_path=file_path,
+                is_current=True,
+            )
+        )
+        if not point_ids:
+            return 0
+        self.client.set_payload(
+            collection_name=self.collection_name,
+            payload={"is_current": False},
+            points=point_ids,
+        )
+        logger.info(
+            "Deactivated %d current snapshot chunks for %s",
+            len(point_ids),
+            file_path,
+        )
+        return len(point_ids)
+
+    def current_snapshot_hash(self, *, workspace_id: str, file_path: str) -> str | None:
+        points, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=self.build_filter(
+                workspace_id=workspace_id,
+                source_kind="file_snapshot",
+                file_path=file_path,
+                is_current=True,
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not points:
+            return None
+        payload = points[0].payload or {}
+        return payload.get("content_hash")
+
+    def next_snapshot_version(self, *, workspace_id: str, file_path: str) -> int:
+        points, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=self.build_filter(
+                workspace_id=workspace_id,
+                source_kind="file_snapshot",
+                file_path=file_path,
+            ),
+            limit=256,
+            with_payload=True,
+            with_vectors=False,
+        )
+        versions = [
+            point.payload.get("snapshot_version")
+            for point in points
+            if point.payload and isinstance(point.payload.get("snapshot_version"), int)
+        ]
+        return (max(versions) + 1) if versions else 1
+
+    def _point_ids_by_filter(self, query_filter: Filter | None) -> list[str]:
+        if query_filter is None:
+            return []
+        point_ids: list[str] = []
+        next_page = None
+        while True:
+            points, next_page = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=query_filter,
+                limit=256,
+                offset=next_page,
+                with_payload=False,
+                with_vectors=False,
+            )
+            point_ids.extend(str(point.id) for point in points)
+            if next_page is None:
+                break
+        return point_ids
     
     def get_stats(self) -> dict:
         try:

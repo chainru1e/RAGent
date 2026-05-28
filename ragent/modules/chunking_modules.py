@@ -141,9 +141,7 @@ class Chunker:
             if content.startswith("[text]"):
                 pure_text = content.replace("[text]", "", 1).strip()
                 context_text += f"[{role}] {pure_text}\n"
-            elif role == "ASSISTANT" and (
-                content.startswith("[Write]") or content.startswith("[Edit]")
-            ):
+            elif role == "ASSISTANT" and content.startswith("[Write]"):
                 # 줄바꿈 단위로 쪼개서 파일명과 코드를 분리
                 lines = content.split("\n")
                 
@@ -229,3 +227,52 @@ class Chunker:
         for i, chunk in enumerate(refined_code_chunks):
             chunk.metadata.chunk_id = str(uuid.uuid5(self.UUID_NAMESPACE, f"{parent_id}_code_{i}"))
         return [context_chunk] + refined_code_chunks
+
+    def process_file_snapshot(
+        self,
+        *,
+        workspace_id: str,
+        file_path: str,
+        content: str,
+        content_hash: str,
+        snapshot_id: str,
+        snapshot_version: int,
+        indexed_at: str,
+    ) -> list[Chunk]:
+        """현재 디스크 파일 전체를 file_snapshot 청크로 변환한다.
+
+        Edit/Write/apply_patch 의 변경 문자열이 아니라 최종 파일 내용을 입력으로
+        받는다. 반환된 청크들은 같은 snapshot_id 를 공유하며, 검색 기본 조건인
+        is_current=True 를 갖는다.
+        """
+        language = self._get_language_from_filename(file_path)
+        base_metadata = ChunkMetaData(
+            parent_id=snapshot_id,
+            file_path=file_path,
+            workspace_id=workspace_id,
+            source_kind="file_snapshot",
+            snapshot_id=snapshot_id,
+            snapshot_version=snapshot_version,
+            is_current=True,
+            indexed_at=indexed_at,
+            content_hash=content_hash,
+            language=language,
+        )
+        refined_chunks = self._split_code_by_ast([Chunk(base_metadata, content)])
+        for i, chunk in enumerate(refined_chunks):
+            chunk.metadata.parent_id = snapshot_id
+            chunk.metadata.chunk_id = str(
+                uuid.uuid5(
+                    self.UUID_NAMESPACE,
+                    f"{workspace_id}:{file_path}:{content_hash}:{i}",
+                )
+            )
+            chunk.metadata.workspace_id = workspace_id
+            chunk.metadata.source_kind = "file_snapshot"
+            chunk.metadata.snapshot_id = snapshot_id
+            chunk.metadata.snapshot_version = snapshot_version
+            chunk.metadata.is_current = True
+            chunk.metadata.indexed_at = indexed_at
+            chunk.metadata.content_hash = content_hash
+            chunk.metadata.language = language
+        return refined_chunks

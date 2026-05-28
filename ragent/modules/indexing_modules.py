@@ -8,8 +8,12 @@ chunker / intent_classifier / embedder / vectordb 호출을 한 함수로 묶고
 
 import json
 import logging
+import hashlib
 import time
 import traceback
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, TypeVar
 
 from ragent.config import FAILED_CHUNKS_FILE, ensure_dirs
@@ -82,6 +86,7 @@ def index_turn(
     embedder: HybridEmbedding,
     vectordb: QdrantStorage,
     contextual_enricher: ContextualEnricher | None = None,
+    workspace_id: str | None = None,
 ) -> int:
     """단일 턴을 chunk → classify → (enrich) → embed → upsert 하나의 단위로 인덱싱.
 
@@ -109,6 +114,10 @@ def index_turn(
         if not chunks:
             logger.warning("indexer: no chunks produced (%s)", turn_summary)
             return 0
+
+        for chunk in chunks:
+            chunk.metadata.workspace_id = workspace_id
+            chunk.metadata.source_kind = chunk.metadata.source_kind or "conversation"
 
         context_chunk = chunks[0]
         intent = intent_classifier.classify(context_chunk.payload).category
@@ -152,4 +161,108 @@ def index_turn(
     except Exception as exc:
         logger.exception("indexer: permanent failure (%s)", turn_summary)
         _record_failure(session_id, turn_summary, exc)
+        return 0
+
+
+def index_file_snapshot(
+    *,
+    absolute_path: str,
+    relative_path: str,
+    workspace_id: str,
+    session_id: str,
+    chunker: Chunker,
+    embedder: HybridEmbedding,
+    vectordb: QdrantStorage,
+) -> int:
+    """변경된 파일의 현재 디스크 상태를 버전형 file_snapshot 으로 인덱싱한다.
+
+    파일이 삭제된 경우에는 기존 current snapshot 만 비활성화한다. 파일이 존재할
+    때는 동일 content_hash 중복 인덱싱을 생략하고, 기존 current snapshot 을
+    is_current=false 로 내린 뒤 새 snapshot 을 is_current=true 로 저장한다.
+    """
+    path = Path(absolute_path)
+    op_summary = f"session={session_id}, file={relative_path}"
+
+    try:
+        if not path.exists():
+            return _retry(
+                lambda: vectordb.deactivate_current_snapshots(
+                    workspace_id=workspace_id,
+                    file_path=relative_path,
+                ),
+                op_name=f"qdrant deactivate deleted snapshot ({op_summary})",
+            )
+
+        if not path.is_file():
+            logger.info("snapshot indexer: skipping non-file path (%s)", op_summary)
+            return 0
+
+        content = path.read_text(encoding="utf-8")
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        previous_hash = _retry(
+            lambda: vectordb.current_snapshot_hash(
+                workspace_id=workspace_id,
+                file_path=relative_path,
+            ),
+            op_name=f"qdrant current hash ({op_summary})",
+        )
+        if previous_hash == content_hash:
+            logger.info("snapshot indexer: unchanged file skipped (%s)", op_summary)
+            return 0
+
+        snapshot_version = _retry(
+            lambda: vectordb.next_snapshot_version(
+                workspace_id=workspace_id,
+                file_path=relative_path,
+            ),
+            op_name=f"qdrant next snapshot version ({op_summary})",
+        )
+        snapshot_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{workspace_id}:{relative_path}:{snapshot_version}:{content_hash}",
+            )
+        )
+        indexed_at = datetime.now(timezone.utc).isoformat()
+
+        chunks = chunker.process_file_snapshot(
+            workspace_id=workspace_id,
+            file_path=relative_path,
+            content=content,
+            content_hash=content_hash,
+            snapshot_id=snapshot_id,
+            snapshot_version=snapshot_version,
+            indexed_at=indexed_at,
+        )
+        if not chunks:
+            logger.warning("snapshot indexer: no chunks produced (%s)", op_summary)
+            return 0
+
+        texts = [c.payload for c in chunks]
+        vectors = _retry(
+            lambda: embedder.embed_batch(texts),
+            op_name=f"embed_batch snapshot ({op_summary})",
+        )
+        for chunk, vector in zip(chunks, vectors):
+            chunk.vector = vector
+
+        _retry(
+            lambda: vectordb.deactivate_current_snapshots(
+                workspace_id=workspace_id,
+                file_path=relative_path,
+            ),
+            op_name=f"qdrant deactivate current snapshot ({op_summary})",
+        )
+        count = _retry(
+            lambda: vectordb.add_points_batch(chunks),
+            op_name=f"qdrant upsert snapshot ({op_summary})",
+        )
+        logger.info("snapshot indexer: upserted %d chunks (%s)", count, op_summary)
+        return count
+    except UnicodeDecodeError as exc:
+        logger.warning("snapshot indexer: skipping non-text file (%s): %s", op_summary, exc)
+        return 0
+    except Exception as exc:
+        logger.exception("snapshot indexer: permanent failure (%s)", op_summary)
+        _record_failure(session_id, f"snapshot:{relative_path}", exc)
         return 0

@@ -71,7 +71,15 @@ class Retriever:
         self.reranker = reranker if reranker is not None else Reranker()
         self.query_transformer = query_transformer if query_transformer is not None else QueryTransformer()
 
-    def retrieve(self, query: str) -> list[Chunk]:
+    def retrieve(
+        self,
+        query: str,
+        *,
+        workspace_id: str | None = None,
+        mode: str = "current_code",
+        file_path: str | None = None,
+        snapshot_version: int | None = None,
+    ) -> list[Chunk]:
         # 1. 쿼리 변환
         transformed_queries = self.query_transformer.transform(query)
 
@@ -84,7 +92,16 @@ class Retriever:
             query_vectors.append(HybridVector(dense=dense_vec, sparse=sparse_vec))
 
         # 3. 시드 검색
-        initial_chunks = self.vectordb.staged_hybrid_search(query_vectors)
+        query_filter = self._build_query_filter(
+            workspace_id=workspace_id,
+            mode=mode,
+            file_path=file_path,
+            snapshot_version=snapshot_version,
+        )
+        initial_chunks = self.vectordb.staged_hybrid_search(
+            query_vectors,
+            query_filter=query_filter,
+        )
         
         if not initial_chunks:
             return []
@@ -96,6 +113,37 @@ class Retriever:
         seed_chunks = [chunk for chunk, score in dynamic_cutoff_chunks]
 
         return seed_chunks
+
+    def _build_query_filter(
+        self,
+        *,
+        workspace_id: str | None,
+        mode: str,
+        file_path: str | None,
+        snapshot_version: int | None,
+    ):
+        if mode == "none":
+            return self.vectordb.build_filter(workspace_id="__no_results__")
+        if mode == "history":
+            return self.vectordb.build_filter(
+                workspace_id=workspace_id,
+                source_kind="conversation",
+            )
+        if mode == "historical_code":
+            return self.vectordb.build_filter(
+                workspace_id=workspace_id,
+                source_kind="file_snapshot",
+                file_path=file_path,
+                is_current=False,
+                snapshot_version=snapshot_version,
+            )
+        return self.vectordb.build_filter(
+            workspace_id=workspace_id,
+            source_kind="file_snapshot",
+            file_path=file_path,
+            is_current=True,
+            snapshot_version=snapshot_version,
+        )
     
 class Reranker:
     """검색된 청크들을 Cross-Encoder 모델을 이용해 재평가하고 정렬하는 클래스"""

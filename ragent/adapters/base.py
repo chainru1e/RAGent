@@ -1,7 +1,7 @@
 """에이전트 어댑터 추상 베이스.
 
 각 어댑터는 자신이 호스팅되는 에이전트(Claude Code, Codex 등)의 입력 스키마를
-정규화된 이벤트 종류('prompt', 'response', 'unknown')로 번역한다.
+정규화된 이벤트 종류('prompt', 'response', 'file_changed', 'unknown')로 번역한다.
 정규화 이후의 라우팅은 BaseAdapter.dispatch가 모든 어댑터에 대해 동일하게 처리한다.
 """
 
@@ -31,11 +31,16 @@ class BaseAdapter(ABC):
     def on_response(self, data: dict) -> None:
         """에이전트 응답이 완료될 때 호출. 인덱싱 트리거."""
 
+    def on_file_changed(self, data: dict) -> None:
+        """파일 변경 tool 이 성공했을 때 호출. 최신 파일 snapshot 인덱싱 트리거."""
+        from ragent.handlers.file_changed import handle
+        handle(data)
+
     @abstractmethod
     def _resolve_event_kind(self, data: dict) -> str:
         """입력 데이터를 정규화된 이벤트 종류 문자열로 변환한다.
 
-        반환값은 다음 중 하나여야 한다: 'prompt', 'response', 'unknown'.
+        반환값은 다음 중 하나여야 한다: 'prompt', 'response', 'file_changed', 'unknown'.
         에이전트 고유의 hook 이름·스키마 해석은 이 메서드 안에서만 한다.
         """
 
@@ -63,6 +68,8 @@ class BaseAdapter(ABC):
             self.on_prompt(data)
         elif kind == "response":
             self.on_response(data)
+        elif kind == "file_changed":
+            self.on_file_changed(data)
         elif kind == "unknown":
             logger = logging.getLogger("ragent")
             logger.warning(
@@ -72,5 +79,5 @@ class BaseAdapter(ABC):
         else:
             raise ValueError(
                 f"_resolve_event_kind returned invalid value: {kind!r}. "
-                f"Must be one of: prompt, response, unknown."
+                f"Must be one of: prompt, response, file_changed, unknown."
             )
