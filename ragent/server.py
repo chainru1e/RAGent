@@ -16,7 +16,6 @@ from threading import RLock
 from typing import Any
 
 from ragent import config
-from ragent.llm_client import LLMClient
 from ragent.logging_config import setup_logging
 from ragent.models.chunk import Chunk
 from ragent.modules.chunking_modules import Chunker
@@ -38,9 +37,7 @@ class RAGentServer:
         self.chunker = Chunker()
         self.intent_classifier = IntentClassifier()
         self.embedder = HybridEmbedding()
-        # 별도 LLMClient 인스턴스. generate_prefix 가 매 호출 override_system_prompt
-        # 를 넘기므로 여기서 system_prompt 를 박지 않아도 무방.
-        self.contextual_enricher = ContextualEnricher(llm_client=LLMClient())
+        self.contextual_enricher = ContextualEnricher()
         self._vectordb_cache: dict[str, QdrantStorage] = {}
         self._lock = RLock()
 
