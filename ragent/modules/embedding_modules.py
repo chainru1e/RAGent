@@ -47,18 +47,21 @@ class HybridEmbedding:
 
         self.sparse_model = SparseTextEmbedding(model_name=SPARSE_EMBEDDING_MODEL)
 
-    def embed(self, text: str) -> HybridVector:
+    def embed_dense(self, text: str) -> np.ndarray:
         dense_output = self.dense_model.create_embedding(text)
-        dense_vec = dense_output["data"][0]["embedding"]
-        
-        sparse_output = list(self.sparse_model.embed([text]))[0]
+        return np.array(dense_output["data"][0]["embedding"], dtype=np.float32)
 
+    def embed_sparse(self, text: str) -> SparseVector:
+        sparse_output = list(self.sparse_model.embed([text]))[0]
+        return SparseVector(
+            indices=sparse_output.indices.tolist(),
+            values=sparse_output.values.tolist()
+        )
+
+    def embed(self, text: str) -> HybridVector:
         return HybridVector(
-            dense=np.array(dense_vec, dtype=np.float32),
-            sparse=SparseVector(
-                indices=sparse_output.indices.tolist(),
-                values=sparse_output.values.tolist()
-            )
+            dense=self.embed_dense(text),
+            sparse=self.embed_sparse(text)
         )
 
     def embed_batch(self, texts: list[str], batch_size: int = 32) -> list[HybridVector]:

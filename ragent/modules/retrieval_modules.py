@@ -1,8 +1,30 @@
+import json
+import json_repair
+
 from ragent.config import RERANKING_MODEL
 from ragent.models.chunk import Chunk
+from ragent.models.vector import HybridVector
+from ragent.models.transformed_query import TransformedQuery
+from ragent.llm_client import LLMClient
 from sentence_transformers import CrossEncoder
 
-def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1, min_chunks: int = 1) -> list[Chunk]:
+def static_cutoff(scored_chunks: list[tuple[Chunk, float]], threshold: float) -> list[tuple[Chunk, float]]:
+    """
+    주어진 임계값(threshold) 이상의 점수를 가진 청크들만 필터링하여 반환한다.
+    
+    Args:
+        scored_chunks: (Chunk, 점수) 형태의 튜플 리스트.
+        threshold: 통과시키기 위한 최소 점수 기준.
+        
+    Returns:
+        list[tuple[Chunk, float]]: 정적 컷오프 조건을 통과한 (Chunk, 점수) 형태의 튜플 리스트.
+    """
+    if not scored_chunks:
+        return []
+    
+    return [(chunk, score) for chunk, score in scored_chunks if score >= threshold]
+
+def dynamic_cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1, min_chunks: int = 1) -> list[tuple[Chunk, float]]:
     """
     청크들의 유사도 점수 낙폭을 분석하여 연관성이 떨어지는 하위 청크들을 잘라낸다.
     입력된 데이터는 내부적으로 점수 기준 내림차순 정렬을 적용한 뒤 컷오프를 수행한다.
@@ -13,7 +35,7 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
         min_chunks: 점수 낙폭이 크더라도 무조건 결과에 포함시킬 최소 청크 개수. 기본값 1.
         
     Returns:
-        동적 컷오프 조건을 통과하여 살아남은 순수 Chunk 객체 리스트.
+        list[tuple[Chunk, float]]: 동적 컷오프 조건을 통과하여 살아남은 (Chunk, 점수) 형태의 튜플 리스트.
     """
     if not scored_chunks:
         return []
@@ -21,9 +43,9 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
     sorted_chunks = sorted(scored_chunks, key=lambda x: x[1], reverse=True)
     
     if len(sorted_chunks) <= min_chunks:
-        return [chunk for chunk, score in sorted_chunks]
+        return sorted_chunks
 
-    filtered_chunks = [sorted_chunks[0][0]]
+    filtered_chunks = [sorted_chunks[0]]
 
     drop_detected = False
     for i in range(1, len(sorted_chunks)):
@@ -38,27 +60,40 @@ def cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: float = 0.1
         if drop_detected and len(filtered_chunks) >= min_chunks:
             break
             
-        filtered_chunks.append(sorted_chunks[i][0])
+        filtered_chunks.append(sorted_chunks[i])
 
     return filtered_chunks
 
 class Retriever:
-    def __init__(self, vectordb, embedder, reranker=None):
+    def __init__(self, vectordb, embedder, reranker=None, query_transformer=None):
         self.vectordb = vectordb
         self.embedder = embedder
         self.reranker = reranker if reranker is not None else Reranker()
+        self.query_transformer = query_transformer if query_transformer is not None else QueryTransformer()
 
     def retrieve(self, query: str) -> list[Chunk]:
-        # 1. 초기 시드 검색
-        query_vector = self.embedder.embed(query)
-        initial_chunks = self.vectordb.staged_hybrid_search(query_vector=query_vector)
+        # 1. 쿼리 변환
+        transformed_queries = self.query_transformer.transform(query)
+
+        # 2. 벡터화 및 HybridVector 조립
+        query_vectors = []
+        for transformed_query in transformed_queries:
+            dense_vec = self.embedder.embed_dense(transformed_query.rewritten)
+            keyword_string = " ".join(transformed_query.keywords)
+            sparse_vec = self.embedder.embed_sparse(keyword_string)
+            query_vectors.append(HybridVector(dense=dense_vec, sparse=sparse_vec))
+
+        # 3. 시드 검색
+        initial_chunks = self.vectordb.staged_hybrid_search(query_vectors)
         
         if not initial_chunks:
             return []
         
-        # 2. 시드 정제
+        # 4. 시드 정제
         reranked_initial_pairs = self.reranker.rerank(query, initial_chunks)
-        seed_chunks = cutoff(reranked_initial_pairs, drop_threshold=0.1, min_chunks=1)
+        static_cutoff_chunks = static_cutoff(reranked_initial_pairs, 0.3)
+        dynamic_cutoff_chunks = dynamic_cutoff(static_cutoff_chunks, drop_threshold=0.1, min_chunks=1)
+        seed_chunks = [chunk for chunk, score in dynamic_cutoff_chunks]
 
         return seed_chunks
     
@@ -91,3 +126,63 @@ class Reranker:
 
         scored_chunks = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
         return scored_chunks
+
+class QueryTransformer:
+    def __init__(self):
+        system_prompt = """
+            You are an expert in query transformation for Retrieval-Augmented Generation (RAG) and vector database search optimization.
+            Your task is to analyze the user's raw input query and transform it into an optimized JSON format.
+
+            ### CRITICAL LANGUAGE RULE:
+            You MUST output the `rewritten` and `keywords` fields in the EXACT SAME LANGUAGE as the user's raw input.
+
+            ### Instructions:
+            1. **Decomposition:** Analyze if the user's input contains multiple distinct questions or topics. If so, break it down into separate, independent sub-queries. If it is a single topic, keep it as one query.
+            2. **Rewriting:** For each resulting query, remove unnecessary conversational filler, emotional language, complaints, and ambiguous pronouns. Rewrite it into a clear, concise, and explicit search objective in the language of the original user query.
+            3. **Expansion:** For each rewritten query, generate a list of highly relevant technical keywords, synonyms, and related domain concepts. These keywords will be used for Sparse/BM25 retrieval, so focus on exact and specific terminology in the language of the original user query.
+
+            ### Output Constraint:
+            You must respond STRICTLY with a valid JSON object matching the exact schema below. Do not include any markdown formatting, explanations, or conversational text outside the JSON.
+
+            ### Output Schema:
+            {
+            "queries": [
+                {
+                "rewritten": "[A clear, standalone search query]",
+                "keywords": ["[keyword1]", "[keyword2]", "[keyword3]"]
+                }
+            ]
+            }
+        """
+        self.llm_client = LLMClient(system_prompt=system_prompt)
+
+    def transform(self, query: str) -> list[TransformedQuery]:
+            """
+            사용자 질문을 분석하여 재작성된 쿼리와 키워드 리스트를 반환합니다.
+
+            Args:
+                query (str): 사용자 질문
+            
+            Returns:
+                list[TransformedQuery]: 재작성된 쿼리와 키워드를 담은 객체 리스트
+            """
+            try:
+                response_text = self.llm_client.ask(query, temperature=0.0)
+                parsed_data = json_repair.loads(response_text)
+                queries = parsed_data.get("queries", [])
+                if not queries:
+                    return [TransformedQuery(rewritten=query, keywords=[])]
+                
+                result = []
+                for q in queries:
+                    result.append(
+                        TransformedQuery(
+                            rewritten=q.get("rewritten", query),
+                            keywords=q.get("keywords", [])
+                        )
+                    )
+                return result
+            except json.JSONDecodeError as e:
+                return [TransformedQuery(rewritten=query, keywords=[])]
+            except Exception as e:
+                return [TransformedQuery(rewritten=query, keywords=[])]
