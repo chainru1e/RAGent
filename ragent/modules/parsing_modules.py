@@ -108,14 +108,14 @@ class ClaudeCodeParser(BaseParser):
     - blocks: assistant 메시지의 content 배열 블록을 구조 보존한 Block 리스트.
       text/thinking → type + text, tool_use → name + 원시 input dict 그대로.
       tool_use 의 input 은 가공·삭제 없이 그대로 들고만 다닌다 — new_string 추출 /
-      old_string 폐기 같은 의미 판단은 전적으로 청커 몫이다. 청커는 이 리스트를
-      순회하므로 한 메시지에 text + tool_use 가 섞이거나 tool_use 가 여러 개여도
-      누락·오염 없이 처리된다.
-    - content: 위 블록들을 prefix tag 와 함께 평탄화한 문자열. turn 해시(결정론적
-      UUID5) 와 serialize_turn 입력으로 여전히 읽히므로 기존 직렬화를 그대로
-      유지한다. tool_use 평탄화 규칙(Write 의 우연한 3줄 모양, Edit/MultiEdit 의
-      named-key 명시) 은 폴백·해시 호환을 위해 보존하되, 코드 추출 의미는 더 이상
-      이 문자열에 의존하지 않는다.
+      old_string 폐기 같은 의미 판단은 파서에 없다. 청커의 resolve_code_action
+      단일 정의가 소유한다. 청커는 이 리스트를 순회하므로 한 메시지에
+      text + tool_use 가 섞이거나 tool_use 가 여러 개여도 누락·오염 없이 처리된다.
+    - content: 위 블록들을 prefix tag 와 함께 평탄화한 문자열. tool_use 는 종류를
+      구분하지 않는 generic dump("[tool_name]\\n" + input.values()) 뿐이라 파서에
+      edit 지식이 0 이다. turn 해시(결정론적 UUID5) 와 blocks 미이관 어댑터의
+      폴백 경로용으로 유지한다. serialize_turn 은 더 이상 이 문자열의 코드 추출에
+      의존하지 않고 blocks 를 직접 읽는다.
     - 비정상 블록(dict 아님 등) 은 skip 한다. 파서 전체는 어떤 입력에서도 throw
       하지 않는다.
     """
@@ -174,51 +174,18 @@ class ClaudeCodeParser(BaseParser):
                     elif block_type == 'tool_use':
                         tool_name = block.get('name')
                         tool_input = block.get('input', {})
-                        # 원시 input dict 를 가공 없이 그대로 보존한다. 의미 판단
-                        # (new_string 추출 / old_string 폐기 등) 은 청커 몫이다.
+                        # 원시 input dict 를 가공 없이 그대로 보존한다. 어느 키가
+                        # 코드인지(edit 의미) 의 판단은 파서가 하지 않는다 — 청커의
+                        # resolve_code_action 단일 정의가 소유한다.
                         blocks.append(Block(
                             type='tool_use',
                             name=tool_name,
                             input=tool_input if isinstance(tool_input, dict) else None,
                         ))
-                        if tool_name == 'Edit':
-                            # Edit 는 키 이름을 명시해 꺼내 [Edit]\n<file_path>\n<new_string>
-                            # 형태로 직렬화한다. Write 와 동일한 3줄 모양이라 청커가
-                            # 그대로 재사용한다. file_path / new_string 키가 없으면
-                            # 불완전한 [Edit] 라인을 만들지 않고 블록을 skip 한다.
-                            if (
-                                isinstance(tool_input, dict)
-                                and 'file_path' in tool_input
-                                and 'new_string' in tool_input
-                            ):
-                                text_content += (
-                                    f"[Edit]\n{tool_input['file_path']}\n{tool_input['new_string']}\n"
-                                )
-                        elif tool_name == 'MultiEdit':
-                            # MultiEdit: file_path 와 edits 리스트의 new_string 조각만
-                            # 순서대로 결합해 단일 Edit 와 동일한 "[Edit]\n<file_path>\n<code>"
-                            # 모양으로 emit. 태그는 [Edit] 로 통일해 청커의 [Edit] 경로를
-                            # 그대로 재사용한다. 한계: 결합된 결과는 단일 함수/클래스 단위가
-                            # 아니라 서로 다른 hunk 들의 단순 이어붙임이므로 AST 파서가
-                            # 모든 노드를 추출하지 못할 수 있다 (잘리거나 일부만 인덱싱됨).
-                            # 그래도 file_path 가 보존된 코드 청크 1+ 개는 보장된다.
-                            edits = tool_input.get('edits') if isinstance(tool_input, dict) else None
-                            if (
-                                isinstance(tool_input, dict)
-                                and 'file_path' in tool_input
-                                and isinstance(edits, list)
-                            ):
-                                pieces = [
-                                    str(e['new_string']) for e in edits
-                                    if isinstance(e, dict) and 'new_string' in e
-                                ]
-                                if pieces:
-                                    combined = "\n".join(pieces)
-                                    text_content += (
-                                        f"[Edit]\n{tool_input['file_path']}\n{combined}\n"
-                                    )
-                        else:
-                            text_content += f"[{tool_name}]\n"
+                        # content 는 generic dump 뿐. tool 종류를 구분하지 않으므로
+                        # 파서에 edit 지식이 0 이다. (해시·폴백 호환용 평탄 표현)
+                        text_content += f"[{tool_name}]\n"
+                        if isinstance(tool_input, dict):
                             for val in tool_input.values():
                                 text_content += f"{val}\n"
 

@@ -25,6 +25,59 @@ from ragent.config import MAX_CHUNK_SIZE
 #        self.parser = ts.Parser(ts.Language(tscpp.language()))
 # =====================================================================
 
+
+def resolve_code_action(block: Block) -> tuple[str, str] | None:
+    """tool_use 블록에서 (file_path, code) 를 해석한다.
+
+    **edit 의미("어느 input 키가 인덱싱 대상 코드인가") 가 사는 유일한 정의다.**
+    파서·serialize_turn·청커 어디에도 이 지식을 중복하지 않고 모두 이 함수를
+    경유한다. Write / Edit / MultiEdit 만 코드 액션으로 인정한다.
+
+    - Write     → (file_path, content)
+    - Edit      → (file_path, new_string)            # old_string / replace_all 무시
+    - MultiEdit → (file_path, edits[*].new_string 을 줄바꿈으로 결합)
+
+    그 외 tool / 필수 키 없음 / input 비-dict / 코드가 빈 경우 None 을 반환한다.
+    어떤 입력에도 throw 하지 않는다.
+    """
+    tool_input = block.input
+    if not isinstance(tool_input, dict):
+        return None
+
+    name = block.name
+    if name == "Write":
+        if "file_path" not in tool_input or "content" not in tool_input:
+            return None
+        file_path = tool_input["file_path"]
+        code = tool_input["content"]
+    elif name == "Edit":
+        if "file_path" not in tool_input or "new_string" not in tool_input:
+            return None
+        file_path = tool_input["file_path"]
+        code = tool_input["new_string"]
+    elif name == "MultiEdit":
+        edits = tool_input.get("edits")
+        if "file_path" not in tool_input or not isinstance(edits, list):
+            return None
+        pieces = [
+            str(e["new_string"]) for e in edits
+            if isinstance(e, dict) and "new_string" in e
+        ]
+        if not pieces:
+            return None
+        file_path = tool_input["file_path"]
+        code = "\n".join(pieces)
+    else:
+        # Read / Bash 등 비코드 tool_use 는 코드 액션이 아니다.
+        return None
+
+    file_path = str(file_path).strip()
+    code = str(code).strip()
+    if not file_path or not code:
+        return None
+    return file_path, code
+
+
 class Chunker:
     """
     단일 대화 턴 데이터를 청킹 처리하는 클래스.
@@ -106,11 +159,9 @@ class Chunker:
            코드 본문을 추출하여 조립한 코드(자식) 청크 리스트. tool_use 블록마다
            독립적인 코드 청크 1개를 만들므로, 한 메시지에 편집이 N개면 청크도 N개다.
 
-        의미 판단(어느 input 키가 코드인지) 은 파서가 아니라 여기서 수행한다.
-        - Write     → path=input["file_path"], code=input["content"]
-        - Edit      → path=input["file_path"], code=input["new_string"] (old_string/replace_all 무시)
-        - MultiEdit → path=input["file_path"], code="\\n".join(edits 의 new_string)
-        - 그 외 tool_use(Read/Bash 등) 는 코드 청크를 만들지 않는다.
+        의미 판단(어느 input 키가 코드인지) 은 모듈 레벨 `resolve_code_action`
+        단일 정의에 위임한다 (Write→content, Edit→new_string, MultiEdit→edits 결합,
+        그 외 tool_use 는 코드 청크 없음).
 
         turn_data에 포함된 메시지 전체 내용을 해시(Hash)하여 결정론적인 고유 UUID5(id)를 생성하고,
         이를 통해 문맥과 코드를 하나로 묶는 데이터 계층 구조의 기반을 마련한다.
@@ -191,52 +242,15 @@ class Chunker:
         return context_chunk, code_chunks
 
     def _build_code_chunk(self, block: Block, parent_id: str) -> Chunk | None:
-        """tool_use 블록 1개에서 코드 청크 1개를 조립한다 (코드 추출 의미 판단).
+        """tool_use 블록 1개에서 코드 청크 1개를 조립한다.
 
-        Write / Edit / MultiEdit 만 코드 청크를 만든다. 어느 input 키가 인덱싱
-        대상 코드인지의 판단을 여기서 수행한다. 필수 키가 없거나 코드가 비면
-        그 블록만 skip(None 반환) 하고 절대 throw 하지 않는다.
-
-        - Write     : file_path, content
-        - Edit      : file_path, new_string  (old_string / replace_all 은 무시)
-        - MultiEdit : file_path, edits[*].new_string 을 줄바꿈으로 결합
+        코드 추출 의미 판단은 모듈 레벨 `resolve_code_action` 단일 정의에 위임한다.
+        None 이면 skip, 아니면 (file_path, code) 로 Chunk 를 조립한다.
         """
-        tool_input = block.input
-        if not isinstance(tool_input, dict):
+        action = resolve_code_action(block)
+        if action is None:
             return None
-
-        name = block.name
-        if name == "Write":
-            if "file_path" not in tool_input or "content" not in tool_input:
-                return None
-            file_path = tool_input["file_path"]
-            code = tool_input["content"]
-        elif name == "Edit":
-            if "file_path" not in tool_input or "new_string" not in tool_input:
-                return None
-            file_path = tool_input["file_path"]
-            code = tool_input["new_string"]
-        elif name == "MultiEdit":
-            edits = tool_input.get("edits")
-            if "file_path" not in tool_input or not isinstance(edits, list):
-                return None
-            pieces = [
-                str(e["new_string"]) for e in edits
-                if isinstance(e, dict) and "new_string" in e
-            ]
-            if not pieces:
-                return None
-            file_path = tool_input["file_path"]
-            code = "\n".join(pieces)
-        else:
-            # Read / Bash 등 비코드 tool_use 는 코드 청크를 만들지 않는다.
-            return None
-
-        file_path = str(file_path).strip()
-        code = str(code).strip()
-        if not file_path or not code:
-            return None
-
+        file_path, code = action
         code_metadata = ChunkMetaData(parent_id=parent_id, file_path=file_path)
         return Chunk(code_metadata, code)
 

@@ -17,7 +17,8 @@ import logging
 import re
 
 from ragent.llm_client import LLMClient
-from ragent.models.parsed_message import NormalizedMessage
+from ragent.models.parsed_message import Block, NormalizedMessage
+from ragent.modules.chunking_modules import resolve_code_action
 
 logger = logging.getLogger("ragent")
 
@@ -70,20 +71,55 @@ _PREAMBLE_PATTERNS = [
 ]
 
 
+def _render_block(block: Block) -> str | None:
+    """단일 Block 을 사람이 읽을 수 있는 prefix-tag 문자열로 렌더한다.
+
+    - text/thinking → "[<type>]\\n<text>"
+    - tool_use(코드 액션) → "[<tool_name>]\\n<file_path>\\n<code>".
+      어느 input 키가 코드인지는 `resolve_code_action` 단일 정의에 위임한다.
+    - tool_use(비코드/해석 불가: Read/Bash 등) → "[<tool_name>]\\n<input.values()>"
+      로 generic dump 하여 컨텍스트를 보존한다.
+    - 알 수 없는 타입 → None (스킵).
+    """
+    if block.type in ("text", "thinking"):
+        return f"[{block.type}]\n{block.text or ''}"
+
+    if block.type == "tool_use":
+        name = block.name or "tool_use"
+        action = resolve_code_action(block)
+        if action is not None:
+            file_path, code = action
+            return f"[{name}]\n{file_path}\n{code}"
+        # 비코드/해석 불가 tool_use: 원시 input 을 generic dump (컨텍스트 손실 방지)
+        if isinstance(block.input, dict) and block.input:
+            values = "\n".join(str(v) for v in block.input.values())
+            return f"[{name}]\n{values}"
+        return f"[{name}]"
+
+    return None
+
+
 def serialize_turn(turn: list[NormalizedMessage]) -> str:
     """turn 메시지 리스트를 단일 문자열로 평탄화한다.
 
-    role 표시(USER/ASSISTANT) 와 함께 각 메시지 본문을 누적한다. content 에는
-    이미 [text]/[Write]/[tool_result] 등 prefix tag 가 박혀 있으므로 그대로
-    유지한다. 결과가 MAX_TURN_CHARS 를 넘으면 꼬리쪽을 잘라낸다.
+    role 표시(USER/ASSISTANT) 와 함께 각 메시지 본문을 누적한다. blocks 가
+    채워진 메시지는 블록을 순회해 렌더하고(코드 액션의 의미는 resolve_code_action
+    단일 정의 경유), blocks 가 빈 메시지(미이관 어댑터/사용자 메시지) 는 기존
+    content 경로로 폴백한다. content 에는 이미 [text]/[tool_result] 등 prefix tag
+    가 박혀 있으므로 그대로 유지한다. 결과가 MAX_TURN_CHARS 를 넘으면 꼬리쪽을
+    잘라낸다.
     """
     parts = []
     for msg in turn:
         role = (msg.role or "unknown").upper()
-        content = (msg.content or "").strip()
-        if not content:
+        if msg.blocks:
+            rendered = [r for r in (_render_block(b) for b in msg.blocks) if r]
+            body = "\n".join(rendered).strip()
+        else:
+            body = (msg.content or "").strip()
+        if not body:
             continue
-        parts.append(f"[{role}]\n{content}")
+        parts.append(f"[{role}]\n{body}")
 
     joined = "\n\n".join(parts)
 
