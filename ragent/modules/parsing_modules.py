@@ -17,7 +17,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 
-from ragent.models.parsed_message import NormalizedMessage
+from ragent.models.parsed_message import Block, NormalizedMessage
 
 
 class BaseParser(ABC):
@@ -103,6 +103,21 @@ class ClaudeCodeParser(BaseParser):
     형식: 각 줄은 대략 다음과 같은 JSON 객체.
         {"message": {"role": ..., "content": ... or [...]}, "timestamp": ...}
     'message' 키가 없는 줄(시스템 이벤트) 은 무시한다.
+
+    출력 표현(전환기 이중 표현):
+    - blocks: assistant 메시지의 content 배열 블록을 구조 보존한 Block 리스트.
+      text/thinking → type + text, tool_use → name + 원시 input dict 그대로.
+      tool_use 의 input 은 가공·삭제 없이 그대로 들고만 다닌다 — new_string 추출 /
+      old_string 폐기 같은 의미 판단은 전적으로 청커 몫이다. 청커는 이 리스트를
+      순회하므로 한 메시지에 text + tool_use 가 섞이거나 tool_use 가 여러 개여도
+      누락·오염 없이 처리된다.
+    - content: 위 블록들을 prefix tag 와 함께 평탄화한 문자열. turn 해시(결정론적
+      UUID5) 와 serialize_turn 입력으로 여전히 읽히므로 기존 직렬화를 그대로
+      유지한다. tool_use 평탄화 규칙(Write 의 우연한 3줄 모양, Edit/MultiEdit 의
+      named-key 명시) 은 폴백·해시 호환을 위해 보존하되, 코드 추출 의미는 더 이상
+      이 문자열에 의존하지 않는다.
+    - 비정상 블록(dict 아님 등) 은 skip 한다. 파서 전체는 어떤 입력에서도 throw
+      하지 않는다.
     """
 
     def parse_transcript_line(self, json_line: dict) -> NormalizedMessage | None:
@@ -116,6 +131,7 @@ class ClaudeCodeParser(BaseParser):
         timestamp = json_line.get('timestamp')
 
         text_content = ""
+        blocks: list[Block] = []
 
         # User 메시지 처리
         if role == 'user':
@@ -146,14 +162,25 @@ class ClaudeCodeParser(BaseParser):
                 if isinstance(block, dict):
                     block_type = block.get('type')
                     if block_type == 'text':
+                        text = block.get('text', '')
+                        blocks.append(Block(type='text', text=text))
                         text_content += "[text]\n"
-                        text_content += block.get('text', '') + "\n"
+                        text_content += text + "\n"
                     elif block_type == 'thinking':
+                        thinking = block.get('thinking', '')
+                        blocks.append(Block(type='thinking', text=thinking))
                         text_content += "[thinking]\n"
-                        text_content += block.get('thinking', '')
+                        text_content += thinking
                     elif block_type == 'tool_use':
                         tool_name = block.get('name')
                         tool_input = block.get('input', {})
+                        # 원시 input dict 를 가공 없이 그대로 보존한다. 의미 판단
+                        # (new_string 추출 / old_string 폐기 등) 은 청커 몫이다.
+                        blocks.append(Block(
+                            type='tool_use',
+                            name=tool_name,
+                            input=tool_input if isinstance(tool_input, dict) else None,
+                        ))
                         if tool_name == 'Edit':
                             # Edit 는 키 이름을 명시해 꺼내 [Edit]\n<file_path>\n<new_string>
                             # 형태로 직렬화한다. Write 와 동일한 3줄 모양이라 청커가
@@ -167,6 +194,29 @@ class ClaudeCodeParser(BaseParser):
                                 text_content += (
                                     f"[Edit]\n{tool_input['file_path']}\n{tool_input['new_string']}\n"
                                 )
+                        elif tool_name == 'MultiEdit':
+                            # MultiEdit: file_path 와 edits 리스트의 new_string 조각만
+                            # 순서대로 결합해 단일 Edit 와 동일한 "[Edit]\n<file_path>\n<code>"
+                            # 모양으로 emit. 태그는 [Edit] 로 통일해 청커의 [Edit] 경로를
+                            # 그대로 재사용한다. 한계: 결합된 결과는 단일 함수/클래스 단위가
+                            # 아니라 서로 다른 hunk 들의 단순 이어붙임이므로 AST 파서가
+                            # 모든 노드를 추출하지 못할 수 있다 (잘리거나 일부만 인덱싱됨).
+                            # 그래도 file_path 가 보존된 코드 청크 1+ 개는 보장된다.
+                            edits = tool_input.get('edits') if isinstance(tool_input, dict) else None
+                            if (
+                                isinstance(tool_input, dict)
+                                and 'file_path' in tool_input
+                                and isinstance(edits, list)
+                            ):
+                                pieces = [
+                                    str(e['new_string']) for e in edits
+                                    if isinstance(e, dict) and 'new_string' in e
+                                ]
+                                if pieces:
+                                    combined = "\n".join(pieces)
+                                    text_content += (
+                                        f"[Edit]\n{tool_input['file_path']}\n{combined}\n"
+                                    )
                         else:
                             text_content += f"[{tool_name}]\n"
                             for val in tool_input.values():
@@ -176,6 +226,7 @@ class ClaudeCodeParser(BaseParser):
             return NormalizedMessage(
                 role=role,
                 content=text_content.strip(),
+                blocks=blocks,
                 timestamp=timestamp,
             )
         return None
