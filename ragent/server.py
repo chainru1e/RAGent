@@ -12,6 +12,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,7 +27,7 @@ from ragent.modules.contextual_retrieval_modules import ContextualEnricher
 from ragent.modules.embedding_modules import HybridEmbedding
 from ragent.modules.indexing_modules import index_file_snapshot, index_turn
 from ragent.modules.intent_classifying_modules import IntentClassifier
-from ragent.modules.retrieval_modules import Retriever
+from ragent.modules.retrieval_modules import Reranker, Retriever
 from ragent.vectordb_client import QdrantStorage
 
 logger = logging.getLogger("ragent.server")
@@ -41,8 +42,14 @@ class RAGentServer:
         self.intent_classifier = IntentClassifier()
         self.embedder = HybridEmbedding()
         self.contextual_enricher = ContextualEnricher()
+        self._reranker: Reranker | None = None
+        self._reranker_init_lock = RLock()
         self._vectordb_cache: dict[str, QdrantStorage] = {}
-        self._lock = RLock()
+        self._vectordb_cache_lock = RLock()
+        self._embedding_lock = RLock()
+        self._rerank_lock = RLock()
+        self._snapshot_locks: dict[tuple[str, str], RLock] = {}
+        self._snapshot_locks_lock = RLock()
         self._save_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._save_worker_thread = threading.Thread(
             target=self._save_worker,
@@ -54,9 +61,8 @@ class RAGentServer:
     def enqueue_save(self, request: dict[str, Any]) -> dict[str, Any]:
         """Validate the request and put it on the save queue. Returns immediately.
 
-        The single save worker drains the queue serially so the in-process
-        embedding model (not thread-safe) and the local LLM (HTTP-serialized
-        anyway) are never hit concurrently.
+        The single save worker drains write tasks serially. Search can still run
+        concurrently and only contends on narrow in-process model locks.
         """
         session_id = request.get("session_id", "")
         transcript_path = request.get("transcript_path", "")
@@ -87,32 +93,41 @@ class RAGentServer:
         session_id = request.get("session_id", "")
         transcript_path = request.get("transcript_path", "")
 
-        with self._lock:
-            parser = self._build_parser(transcript_path)
-            last_turn = parser.parse_last_turn()
+        total_started = time.perf_counter()
+        parse_started = time.perf_counter()
+        parser = self._build_parser(transcript_path)
+        last_turn = parser.parse_last_turn()
+        parse_ms = (time.perf_counter() - parse_started) * 1000
 
-            if not last_turn:
-                logger.warning("Save: no turns found in transcript %s", transcript_path)
-                return
+        if not last_turn:
+            logger.warning("Save: no turns found in transcript %s", transcript_path)
+            return
 
-            vectordb = self._get_vectordb(transcript_path)
-            workspace_id = self._workspace_id_from_transcript(transcript_path)
-            count = index_turn(
-                turn=last_turn,
-                session_id=session_id,
-                workspace_id=workspace_id,
-                chunker=self.chunker,
-                intent_classifier=self.intent_classifier,
-                embedder=self.embedder,
-                vectordb=vectordb,
-                contextual_enricher=(
-                    self.contextual_enricher
-                    if config.ENABLE_CONTEXTUAL_RETRIEVAL
-                    else None
-                ),
-            )
+        vectordb = self._get_vectordb(transcript_path)
+        workspace_id = self._workspace_id_from_transcript(transcript_path)
+        count = index_turn(
+            turn=last_turn,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            chunker=self.chunker,
+            intent_classifier=self.intent_classifier,
+            embedder=self.embedder,
+            vectordb=vectordb,
+            contextual_enricher=(
+                self.contextual_enricher
+                if config.ENABLE_CONTEXTUAL_RETRIEVAL
+                else None
+            ),
+            embedding_lock=self._embedding_lock,
+        )
 
-        logger.info("Save: indexed %d chunks for session %s", count, session_id)
+        logger.info(
+            "Save: indexed %d chunks for session %s (parse_ms=%.1f total_ms=%.1f)",
+            count,
+            session_id,
+            parse_ms,
+            (time.perf_counter() - total_started) * 1000,
+        )
 
     def enqueue_file_changed(self, request: dict[str, Any]) -> dict[str, Any]:
         session_id = request.get("session_id", "")
@@ -144,12 +159,13 @@ class RAGentServer:
         vectordb = self._get_vectordb_by_collection(collection_name)
         root = Path(workspace_root).resolve() if workspace_root else None
 
-        with self._lock:
-            total = 0
-            for raw_path in paths:
-                if not isinstance(raw_path, str) or not raw_path.strip():
-                    continue
-                absolute_path, relative_path = self._resolve_changed_path(raw_path, root)
+        total = 0
+        for raw_path in paths:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            absolute_path, relative_path = self._resolve_changed_path(raw_path, root)
+            snapshot_lock = self._get_snapshot_lock(workspace_id, relative_path)
+            with snapshot_lock:
                 total += index_file_snapshot(
                     absolute_path=str(absolute_path),
                     relative_path=relative_path,
@@ -158,6 +174,7 @@ class RAGentServer:
                     chunker=self.chunker,
                     embedder=self.embedder,
                     vectordb=vectordb,
+                    embedding_lock=self._embedding_lock,
                 )
 
         logger.info(
@@ -181,20 +198,22 @@ class RAGentServer:
         if not prompt:
             return {"ok": False, "chunks": [], "context": "", "reason": "missing_prompt"}
 
-        with self._lock:
-            vectordb = self._get_vectordb(transcript_path)
-            retriever = Retriever(
-                vectordb=vectordb,
-                embedder=self.embedder,
-            )
-            workspace_id = self._workspace_id_from_transcript(transcript_path)
-            chunks = retriever.retrieve(
-                prompt,
-                workspace_id=workspace_id,
-                mode=request.get("mode", "current_code"),
-                file_path=request.get("file_path"),
-                snapshot_version=request.get("snapshot_version"),
-            )
+        vectordb = self._get_vectordb(transcript_path)
+        retriever = Retriever(
+            vectordb=vectordb,
+            embedder=self.embedder,
+            reranker=self._get_reranker(),
+            embedding_lock=self._embedding_lock,
+            rerank_lock=self._rerank_lock,
+        )
+        workspace_id = self._workspace_id_from_transcript(transcript_path)
+        chunks = retriever.retrieve(
+            prompt,
+            workspace_id=workspace_id,
+            mode=request.get("mode", "current_code"),
+            file_path=request.get("file_path"),
+            snapshot_version=request.get("snapshot_version"),
+        )
 
         logger.info("Search: retrieved %d chunks for session %s", len(chunks), session_id)
         return {
@@ -292,10 +311,24 @@ class RAGentServer:
         return self._get_vectordb_by_collection(collection_name)
 
     def _get_vectordb_by_collection(self, collection_name: str) -> QdrantStorage:
-        if collection_name not in self._vectordb_cache:
-            self._vectordb_cache[collection_name] = QdrantStorage(collection_name)
+        with self._vectordb_cache_lock:
+            if collection_name not in self._vectordb_cache:
+                self._vectordb_cache[collection_name] = QdrantStorage(collection_name)
 
-        return self._vectordb_cache[collection_name]
+            return self._vectordb_cache[collection_name]
+
+    def _get_snapshot_lock(self, workspace_id: str, file_path: str) -> RLock:
+        key = (workspace_id, file_path)
+        with self._snapshot_locks_lock:
+            if key not in self._snapshot_locks:
+                self._snapshot_locks[key] = RLock()
+            return self._snapshot_locks[key]
+
+    def _get_reranker(self) -> Reranker:
+        with self._reranker_init_lock:
+            if self._reranker is None:
+                self._reranker = Reranker()
+            return self._reranker
 
     def _resolve_changed_path(self, raw_path: str, root: Path | None) -> tuple[Path, str]:
         path = Path(raw_path)

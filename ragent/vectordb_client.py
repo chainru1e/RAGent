@@ -1,6 +1,4 @@
 import logging
-from enum import Enum
-
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -17,7 +15,6 @@ from qdrant_client.models import (
 
 from ragent.config import QDRANT_HOST, QDRANT_PORT, SHORT_DENSE_SIZE, LONG_DENSE_SIZE
 from ragent.models.chunk import Chunk, ChunkMetaData
-from ragent.models.intent import IntentCategory
 from ragent.models.vector import HybridVector
 
 logger = logging.getLogger("ragent.vectordb")
@@ -56,7 +53,6 @@ class QdrantStorage:
             ("snapshot_id", "keyword"),
             ("snapshot_version", "integer"),
             ("indexed_at", "keyword"),
-            ("type", "keyword"),
         ):
             try:
                 self.client.create_payload_index(
@@ -76,10 +72,7 @@ class QdrantStorage:
         return {
             "text": chunk.payload,
             "chunk_id": meta.chunk_id,
-            "parent_id": meta.parent_id,
             "file_path": meta.file_path,
-            "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
-            "context_prefix": meta.context_prefix,
             "workspace_id": meta.workspace_id,
             "source_kind": meta.source_kind,
             "snapshot_id": meta.snapshot_id,
@@ -87,7 +80,6 @@ class QdrantStorage:
             "is_current": meta.is_current,
             "indexed_at": meta.indexed_at,
             "content_hash": meta.content_hash,
-            "language": meta.language,
         }
 
     def add_point(self, chunk: Chunk):
@@ -132,19 +124,9 @@ class QdrantStorage:
     
     def payload_to_chunk(self, payload: dict) -> Chunk:
         """Qdrant Payload를 Chunk 객체로 변환합니다."""
-        intent_type = None
-        if payload.get("type"):
-            try:
-                intent_type = IntentCategory(payload.get("type"))
-            except ValueError:
-                intent_type = payload.get("type") 
-
         metadata = ChunkMetaData(
             chunk_id=payload.get("chunk_id"),
-            parent_id=payload.get("parent_id"),
             file_path=payload.get("file_path"),
-            type=intent_type,
-            context_prefix=payload.get("context_prefix"),
             workspace_id=payload.get("workspace_id"),
             source_kind=payload.get("source_kind") or "conversation",
             snapshot_id=payload.get("snapshot_id"),
@@ -152,7 +134,6 @@ class QdrantStorage:
             is_current=payload.get("is_current"),
             indexed_at=payload.get("indexed_at"),
             content_hash=payload.get("content_hash"),
-            language=payload.get("language"),
         )
         
         return Chunk(

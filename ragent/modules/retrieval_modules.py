@@ -1,4 +1,8 @@
 import json
+import logging
+import time
+from typing import Any, Callable, TypeVar
+
 import json_repair
 
 from ragent.config import RERANKING_MODEL
@@ -7,6 +11,23 @@ from ragent.models.vector import HybridVector
 from ragent.models.transformed_query import TransformedQuery
 from ragent.llm_client import LLMClient
 from sentence_transformers import CrossEncoder
+
+logger = logging.getLogger("ragent.retrieval")
+
+T = TypeVar("T")
+
+
+def _call_with_lock(lock: Any | None, fn: Callable[[], T]) -> tuple[T, float, float]:
+    wait_started = time.perf_counter()
+    if lock is None:
+        run_started = wait_started
+        result = fn()
+    else:
+        with lock:
+            run_started = time.perf_counter()
+            result = fn()
+    finished = time.perf_counter()
+    return result, run_started - wait_started, finished - run_started
 
 def static_cutoff(scored_chunks: list[tuple[Chunk, float]], threshold: float) -> list[tuple[Chunk, float]]:
     """
@@ -65,11 +86,21 @@ def dynamic_cutoff(scored_chunks: list[tuple[Chunk, float]], drop_threshold: flo
     return filtered_chunks
 
 class Retriever:
-    def __init__(self, vectordb, embedder, reranker=None, query_transformer=None):
+    def __init__(
+        self,
+        vectordb,
+        embedder,
+        reranker=None,
+        query_transformer=None,
+        embedding_lock: Any | None = None,
+        rerank_lock: Any | None = None,
+    ):
         self.vectordb = vectordb
         self.embedder = embedder
         self.reranker = reranker if reranker is not None else Reranker()
         self.query_transformer = query_transformer if query_transformer is not None else QueryTransformer()
+        self.embedding_lock = embedding_lock
+        self.rerank_lock = rerank_lock
 
     def retrieve(
         self,
@@ -80,16 +111,31 @@ class Retriever:
         file_path: str | None = None,
         snapshot_version: int | None = None,
     ) -> list[Chunk]:
+        total_started = time.perf_counter()
+
         # 1. 쿼리 변환
+        transform_started = time.perf_counter()
         transformed_queries = self.query_transformer.transform(query)
+        transform_ms = (time.perf_counter() - transform_started) * 1000
 
         # 2. 벡터화 및 HybridVector 조립
         query_vectors = []
+        embed_wait_s = 0.0
+        embed_s = 0.0
         for transformed_query in transformed_queries:
-            dense_vec = self.embedder.embed_dense(transformed_query.rewritten)
-            keyword_string = " ".join(transformed_query.keywords)
-            sparse_vec = self.embedder.embed_sparse(keyword_string)
-            query_vectors.append(HybridVector(dense=dense_vec, sparse=sparse_vec))
+            def embed_query():
+                dense_vec = self.embedder.embed_dense(transformed_query.rewritten)
+                keyword_string = " ".join(transformed_query.keywords)
+                sparse_vec = self.embedder.embed_sparse(keyword_string)
+                return HybridVector(dense=dense_vec, sparse=sparse_vec)
+
+            query_vector, wait_s, run_s = _call_with_lock(
+                self.embedding_lock,
+                embed_query,
+            )
+            embed_wait_s += wait_s
+            embed_s += run_s
+            query_vectors.append(query_vector)
 
         # 3. 시드 검색
         query_filter = self._build_query_filter(
@@ -98,19 +144,45 @@ class Retriever:
             file_path=file_path,
             snapshot_version=snapshot_version,
         )
+        qdrant_started = time.perf_counter()
         initial_chunks = self.vectordb.staged_hybrid_search(
             query_vectors,
             query_filter=query_filter,
         )
+        qdrant_ms = (time.perf_counter() - qdrant_started) * 1000
         
         if not initial_chunks:
+            logger.info(
+                "retriever timing: transform_ms=%.1f embed_wait_ms=%.1f embed_ms=%.1f "
+                "qdrant_search_ms=%.1f rerank_wait_ms=0.0 rerank_ms=0.0 total_ms=%.1f",
+                transform_ms,
+                embed_wait_s * 1000,
+                embed_s * 1000,
+                qdrant_ms,
+                (time.perf_counter() - total_started) * 1000,
+            )
             return []
         
         # 4. 시드 정제
-        reranked_initial_pairs = self.reranker.rerank(query, initial_chunks)
+        reranked_initial_pairs, rerank_wait_s, rerank_s = _call_with_lock(
+            self.rerank_lock,
+            lambda: self.reranker.rerank(query, initial_chunks),
+        )
         static_cutoff_chunks = static_cutoff(reranked_initial_pairs, 0.3)
         dynamic_cutoff_chunks = dynamic_cutoff(static_cutoff_chunks, drop_threshold=0.1, min_chunks=1)
         seed_chunks = [chunk for chunk, score in dynamic_cutoff_chunks]
+
+        logger.info(
+            "retriever timing: transform_ms=%.1f embed_wait_ms=%.1f embed_ms=%.1f "
+            "qdrant_search_ms=%.1f rerank_wait_ms=%.1f rerank_ms=%.1f total_ms=%.1f",
+            transform_ms,
+            embed_wait_s * 1000,
+            embed_s * 1000,
+            qdrant_ms,
+            rerank_wait_s * 1000,
+            rerank_s * 1000,
+            (time.perf_counter() - total_started) * 1000,
+        )
 
         return seed_chunks
 

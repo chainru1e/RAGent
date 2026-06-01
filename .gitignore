@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 .env
 ragent/inspect_db.py
+docs/

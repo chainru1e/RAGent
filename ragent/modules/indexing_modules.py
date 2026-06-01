@@ -14,7 +14,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
 from ragent.config import FAILED_CHUNKS_FILE, ensure_dirs
 from ragent.models.parsed_message import NormalizedMessage
@@ -55,6 +55,19 @@ def _retry(fn: Callable[[], T], *, attempts: int = 3, base_delay: float = 0.5, o
     raise last_exc
 
 
+def _call_with_lock(lock: Any | None, fn: Callable[[], T]) -> tuple[T, float, float]:
+    wait_started = time.perf_counter()
+    if lock is None:
+        run_started = wait_started
+        result = fn()
+    else:
+        with lock:
+            run_started = time.perf_counter()
+            result = fn()
+    finished = time.perf_counter()
+    return result, run_started - wait_started, finished - run_started
+
+
 def _record_failure(session_id: str, turn_summary: str, exc: Exception) -> None:
     """영구 실패 항목을 ~/.ragent/failed_chunks.jsonl 에 append.
 
@@ -87,6 +100,7 @@ def index_turn(
     vectordb: QdrantStorage,
     contextual_enricher: ContextualEnricher | None = None,
     workspace_id: str | None = None,
+    embedding_lock: Any | None = None,
 ) -> int:
     """단일 턴을 chunk → classify → (enrich) → embed → upsert 하나의 단위로 인덱싱.
 
@@ -108,9 +122,13 @@ def index_turn(
         f"ts0={turn[0].timestamp}"
     )
 
+    total_started = time.perf_counter()
+
     try:
         # deterministic, no transient failure mode → retry unnecessary
+        chunk_started = time.perf_counter()
         chunks = chunker.process_turn(turn)
+        chunk_ms = (time.perf_counter() - chunk_started) * 1000
         if not chunks:
             logger.warning("indexer: no chunks produced (%s)", turn_summary)
             return 0
@@ -120,11 +138,14 @@ def index_turn(
             chunk.metadata.source_kind = chunk.metadata.source_kind or "conversation"
 
         context_chunk = chunks[0]
+        intent_started = time.perf_counter()
         intent = intent_classifier.classify(context_chunk.payload).category
+        intent_ms = (time.perf_counter() - intent_started) * 1000
 
+        contextual_ms = 0.0
         if contextual_enricher is not None and len(chunks) > 1:
             turn_text = serialize_turn(turn)
-            t0 = time.time()
+            contextual_started = time.perf_counter()
             enriched = 0
             for code_chunk in chunks[1:]:
                 prefix = contextual_enricher.generate_prefix(
@@ -133,9 +154,10 @@ def index_turn(
                 if prefix:
                     code_chunk.metadata.context_prefix = prefix
                     enriched += 1
+            contextual_ms = (time.perf_counter() - contextual_started) * 1000
             logger.info(
                 "indexer: contextual prefixes generated for %d/%d code chunks in %.2fs (%s)",
-                enriched, len(chunks) - 1, time.time() - t0, turn_summary,
+                enriched, len(chunks) - 1, contextual_ms / 1000, turn_summary,
             )
 
         texts = [
@@ -144,17 +166,45 @@ def index_turn(
             else c.payload
             for c in chunks
         ]
+        embed_wait_s = 0.0
+        embed_s = 0.0
+
+        def embed_batch_locked():
+            nonlocal embed_wait_s, embed_s
+            vectors, wait_s, run_s = _call_with_lock(
+                embedding_lock,
+                lambda: embedder.embed_batch(texts),
+            )
+            embed_wait_s += wait_s
+            embed_s += run_s
+            return vectors
+
         vectors = _retry(
-            lambda: embedder.embed_batch(texts),
+            embed_batch_locked,
             op_name=f"embed_batch ({turn_summary})",
         )
         for c, v in zip(chunks, vectors):
             c.metadata.type = intent
             c.vector = v
 
+        qdrant_started = time.perf_counter()
         count = _retry(
             lambda: vectordb.add_points_batch(chunks),
             op_name=f"qdrant upsert ({turn_summary})",
+        )
+        qdrant_ms = (time.perf_counter() - qdrant_started) * 1000
+        total_ms = (time.perf_counter() - total_started) * 1000
+        logger.info(
+            "indexer timing: chunk_ms=%.1f intent_ms=%.1f contextual_ms=%.1f "
+            "embed_wait_ms=%.1f embed_ms=%.1f qdrant_upsert_ms=%.1f total_ms=%.1f (%s)",
+            chunk_ms,
+            intent_ms,
+            contextual_ms,
+            embed_wait_s * 1000,
+            embed_s * 1000,
+            qdrant_ms,
+            total_ms,
+            turn_summary,
         )
         logger.info("indexer: upserted %d chunks (%s)", count, turn_summary)
         return count
@@ -173,6 +223,7 @@ def index_file_snapshot(
     chunker: Chunker,
     embedder: HybridEmbedding,
     vectordb: QdrantStorage,
+    embedding_lock: Any | None = None,
 ) -> int:
     """변경된 파일의 현재 디스크 상태를 버전형 file_snapshot 으로 인덱싱한다.
 
@@ -182,6 +233,7 @@ def index_file_snapshot(
     """
     path = Path(absolute_path)
     op_summary = f"session={session_id}, file={relative_path}"
+    total_started = time.perf_counter()
 
     try:
         if not path.exists():
@@ -197,8 +249,11 @@ def index_file_snapshot(
             logger.info("snapshot indexer: skipping non-file path (%s)", op_summary)
             return 0
 
+        read_started = time.perf_counter()
         content = path.read_text(encoding="utf-8")
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        read_ms = (time.perf_counter() - read_started) * 1000
+        qdrant_read_started = time.perf_counter()
         previous_hash = _retry(
             lambda: vectordb.current_snapshot_hash(
                 workspace_id=workspace_id,
@@ -217,6 +272,7 @@ def index_file_snapshot(
             ),
             op_name=f"qdrant next snapshot version ({op_summary})",
         )
+        qdrant_read_ms = (time.perf_counter() - qdrant_read_started) * 1000
         snapshot_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
@@ -225,6 +281,7 @@ def index_file_snapshot(
         )
         indexed_at = datetime.now(timezone.utc).isoformat()
 
+        chunk_started = time.perf_counter()
         chunks = chunker.process_file_snapshot(
             workspace_id=workspace_id,
             file_path=relative_path,
@@ -234,18 +291,33 @@ def index_file_snapshot(
             snapshot_version=snapshot_version,
             indexed_at=indexed_at,
         )
+        chunk_ms = (time.perf_counter() - chunk_started) * 1000
         if not chunks:
             logger.warning("snapshot indexer: no chunks produced (%s)", op_summary)
             return 0
 
         texts = [c.payload for c in chunks]
+        embed_wait_s = 0.0
+        embed_s = 0.0
+
+        def embed_batch_locked():
+            nonlocal embed_wait_s, embed_s
+            vectors, wait_s, run_s = _call_with_lock(
+                embedding_lock,
+                lambda: embedder.embed_batch(texts),
+            )
+            embed_wait_s += wait_s
+            embed_s += run_s
+            return vectors
+
         vectors = _retry(
-            lambda: embedder.embed_batch(texts),
+            embed_batch_locked,
             op_name=f"embed_batch snapshot ({op_summary})",
         )
         for chunk, vector in zip(chunks, vectors):
             chunk.vector = vector
 
+        qdrant_write_started = time.perf_counter()
         _retry(
             lambda: vectordb.deactivate_current_snapshots(
                 workspace_id=workspace_id,
@@ -256,6 +328,20 @@ def index_file_snapshot(
         count = _retry(
             lambda: vectordb.add_points_batch(chunks),
             op_name=f"qdrant upsert snapshot ({op_summary})",
+        )
+        qdrant_write_ms = (time.perf_counter() - qdrant_write_started) * 1000
+        total_ms = (time.perf_counter() - total_started) * 1000
+        logger.info(
+            "snapshot indexer timing: read_ms=%.1f qdrant_read_ms=%.1f chunk_ms=%.1f "
+            "embed_wait_ms=%.1f embed_ms=%.1f qdrant_write_ms=%.1f total_ms=%.1f (%s)",
+            read_ms,
+            qdrant_read_ms,
+            chunk_ms,
+            embed_wait_s * 1000,
+            embed_s * 1000,
+            qdrant_write_ms,
+            total_ms,
+            op_summary,
         )
         logger.info("snapshot indexer: upserted %d chunks (%s)", count, op_summary)
         return count
