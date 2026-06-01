@@ -91,6 +91,14 @@ class RAGentServer:
                 logger.warning("Save: no turns found in transcript %s", transcript_path)
                 return
 
+            # 파일 단위 Contextual Retrieval 경로 ②: 세션 전체에서 latest Write
+            # 본문을 모아 index_turn 에 넘긴다. enrichment 가 꺼져 있으면 불필요.
+            file_snapshots = (
+                parser.build_file_snapshots()
+                if config.ENABLE_CONTEXTUAL_RETRIEVAL
+                else None
+            )
+
             vectordb = self._get_vectordb(transcript_path)
             count = index_turn(
                 turn=last_turn,
@@ -104,6 +112,7 @@ class RAGentServer:
                     if config.ENABLE_CONTEXTUAL_RETRIEVAL
                     else None
                 ),
+                file_snapshots=file_snapshots,
             )
 
         logger.info("Save: indexed %d chunks for session %s", count, session_id)

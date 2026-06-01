@@ -84,6 +84,7 @@ def index_turn(
     vectordb: QdrantStorage,
     contextual_enricher: ContextualEnricher | None = None,
     file_sources: dict[str, str] | None = None,
+    file_snapshots: dict[str, str] | None = None,
 ) -> int:
     """단일 턴을 chunk → classify → (enrich) → embed → upsert 하나의 단위로 인덱싱.
 
@@ -96,6 +97,7 @@ def index_turn(
     을 문서로 한 맥락 문장을 생성해 chunk.metadata.context_prefix 에 보관한다.
     파일 문서의 우선순위는:
         file_sources[path]      # ① 동일 turn 의 Write (temporal consistency 보장)
+        ?? file_snapshots[path] # ② 세션 전체에서 모은 latest Write 스냅샷
         ?? serialize_turn(turn) # ③ 최후 fallback (직전 Write 가 없는 Edit-origin 등)
     file_sources(①) 가 항상 우선한다 — 청크가 그 파일 버전에 속함이 보장되기
     때문. file_sources 가 None 이면 chunker.process_turn 이 돌려준 turn 내
@@ -140,6 +142,8 @@ def index_turn(
             for code_chunk in ordered:
                 path = code_chunk.metadata.file_path
                 raw = (file_sources or {}).get(path)           # ① 동일 turn Write
+                if raw is None and file_snapshots:
+                    raw = file_snapshots.get(path)             # ② 세션 전체 스냅샷
                 if raw is not None:
                     document = doc_cache.get(path)
                     if document is None:

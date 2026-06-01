@@ -14,10 +14,13 @@ prefix tag 컨벤션 ('[text]', '[<tool_name>]', '[tool_result]', '[thinking]',
 """
 
 import json
+import logging
 import os
 from abc import ABC, abstractmethod
 
 from ragent.models.parsed_message import Block, NormalizedMessage
+
+logger = logging.getLogger("ragent")
 
 
 class BaseParser(ABC):
@@ -95,6 +98,62 @@ class BaseParser(ABC):
 
         turn.reverse()
         return turn
+
+    def build_file_snapshots(self) -> dict[str, str]:
+        """transcript 전체에서 `[Write]` 본문을 모아 `file_path → 최신 본문` 맵을 만든다.
+
+        파일 단위 Contextual Retrieval 의 경로 ②(세션 전체 latest Write 스냅샷)
+        용. parse_last_turn 의 동일 turn Write(경로 ①) 가 잡지 못하는, 이전
+        turn 에 쓰였거나 `[Edit]` 로만 등장한 파일의 문서 출처를 보강한다.
+
+        전 라인을 시간순(파일 위→아래) 으로 `parse_transcript_line` 에 통과시켜
+        role==assistant 이고 content 가 `[Write]` 로 시작하는 메시지에서
+        lines[1]=path, "\\n".join(lines[2:])=body 를 모은다. 같은 파일이 여러 번
+        쓰였으면 나중(아래쪽) Write 가 덮어쓴다. `[Edit]`/`MultiEdit` 은 파일 전체
+        본문이 아니므로 제외한다.
+
+        실패 격리: 파일 없음/빈 파일/깨진 라인은 건너뛰고, 어떤 입력에도 예외를
+        밖으로 던지지 않는다(부분 결과 또는 빈 dict 반환).
+        """
+        snapshots: dict[str, str] = {}
+
+        if not os.path.exists(self.transcript_path) or os.path.getsize(self.transcript_path) == 0:
+            return snapshots
+
+        try:
+            with open(self.transcript_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    try:
+                        msg = self.parse_transcript_line(data)
+                    except Exception:
+                        # 파서는 throw 하지 않도록 설계되었으나, 스냅샷 수집이
+                        # 인덱싱 흐름을 깨지 않도록 방어적으로 한 번 더 감싼다.
+                        continue
+                    if msg is None or msg.role != "assistant":
+                        continue
+                    content = msg.content
+                    if not content.startswith("[Write]"):
+                        continue
+                    lines = content.split("\n")
+                    if len(lines) < 2:
+                        continue
+                    path = lines[1].strip()
+                    body = "\n".join(lines[2:]).strip()
+                    if path and body:
+                        snapshots[path] = body
+        except OSError:
+            logger.exception(
+                "parser: failed to read transcript for file snapshots (%s)",
+                self.transcript_path,
+            )
+
+        return snapshots
 
 
 class ClaudeCodeParser(BaseParser):
