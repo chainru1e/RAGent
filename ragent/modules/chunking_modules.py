@@ -149,15 +149,21 @@ class Chunker:
             
         return self.builders_cache[language]
     
-    def _extract_turn_components(self, turn_data: list[NormalizedMessage]) -> tuple[Chunk, list[Chunk]]:
+    def _extract_turn_components(
+        self, turn_data: list[NormalizedMessage]
+    ) -> tuple[Chunk, list[Chunk], dict[str, str]]:
         """
         하나의 대화 턴에서 문맥 텍스트와 코드 블록을 분리 추출하고, 이를 `Chunk` 객체로 포장한다.
 
-        이 함수는 turn_data에 포함된 메시지들을 순회하면서 다음 두 가지를 만든다.
+        이 함수는 turn_data에 포함된 메시지들을 순회하면서 다음 세 가지를 만든다.
         1. context_chunk: text/thinking 블록의 본문을 역할 정보와 함께 누적한 문맥(부모) 청크
         2. code_chunks: ASSISTANT의 Write / Edit / MultiEdit tool_use 블록에서 파일 경로와
            코드 본문을 추출하여 조립한 코드(자식) 청크 리스트. tool_use 블록마다
            독립적인 코드 청크 1개를 만들므로, 한 메시지에 편집이 N개면 청크도 N개다.
+        3. file_sources: **`[Write]` (Write tool) 로만** 만들어진 `file_path → 파일 전체 본문`
+           맵. Contextual Retrieval 의 파일 단위 문서(경로 ①, 동일 turn Write) 로 쓰인다.
+           같은 turn 에서 같은 파일을 두 번 Write 하면 나중 것이 덮어쓴다. `[Edit]`/
+           `MultiEdit` 은 담지 않는다 — new_string 조각이라 파일 전체 문서가 아니다.
 
         의미 판단(어느 input 키가 코드인지) 은 모듈 레벨 `resolve_code_action`
         단일 정의에 위임한다 (Write→content, Edit→new_string, MultiEdit→edits 결합,
@@ -182,15 +188,17 @@ class Chunker:
                 각 원소는 role, content 속성을 가진다.
 
         Returns:
-           context_chunk,code_chunks (tuple[chunk,list[chunk]]):
+           context_chunk, code_chunks, file_sources (tuple[Chunk, list[Chunk], dict[str, str]]):
                 - context_chunk (Chunk): 누적된 문맥 문자열을 담고 있는 청크 객체
                 - code_chunks (list[chunk]): 추출된 개별 코드 블록들을 담고 있는 청크 객체 리스트
+                - file_sources (dict[str, str]): `[Write]` 로 쓰인 `file_path → 전체 본문` 맵
 
         Notes:
             - 형식이 맞지 않는 메시지는 건너뛰도록 설계되어 있다.
         """
         context_text = ""
         code_chunks = []
+        file_sources: dict[str, str] = {}
 
         combined_content = "".join([f"{msg.role}:{msg.content}" for msg in turn_data])
         content_hash = hashlib.sha256(combined_content.encode('utf-8')).hexdigest()
@@ -212,6 +220,13 @@ class Chunker:
                         code_chunk = self._build_code_chunk(block, id)
                         if code_chunk is not None:
                             code_chunks.append(code_chunk)
+                        # 파일 단위 문서(경로 ①) 용: Write 본문만 file_sources 에
+                        # 담는다. Edit/MultiEdit 은 조각이라 제외한다.
+                        if block.name == "Write":
+                            write_action = resolve_code_action(block)
+                            if write_action is not None:
+                                w_path, w_code = write_action
+                                file_sources[w_path] = w_code
             else:
                 # 폴백: 아직 blocks 로 이관되지 않은 어댑터(Codex/Windsurf) 의
                 # 평탄 content prefix 경로. 이관 완료 시 제거 대상.
@@ -236,10 +251,13 @@ class Chunker:
                                 file_path=file_path
                             )
                             code_chunks.append(Chunk(code_metadata, code_content))
+                            # 폴백 경로의 파일 단위 문서(경로 ①): [Write] 만 담는다.
+                            if content.startswith("[Write]"):
+                                file_sources[file_path] = code_content
 
         context_metadata = ChunkMetaData(chunk_id=id)
         context_chunk = Chunk(context_metadata, context_text)
-        return context_chunk, code_chunks
+        return context_chunk, code_chunks, file_sources
 
     def _build_code_chunk(self, block: Block, parent_id: str) -> Chunk | None:
         """tool_use 블록 1개에서 코드 청크 1개를 조립한다.
@@ -292,9 +310,11 @@ class Chunker:
         
         return refined_chunks
 
-    def process_turn(self, turn_data: list[NormalizedMessage]) -> list[Chunk]:
+    def process_turn(
+        self, turn_data: list[NormalizedMessage]
+    ) -> tuple[list[Chunk], dict[str, str]]:
         """
-        단일 대화 턴 데이터를 청킹하여 Chunk 리스트를 반환한다.
+        단일 대화 턴 데이터를 청킹하여 (Chunk 리스트, file_sources) 를 반환한다.
 
         파이프라인:
         1. 객체 초기 포장 (`extract_turn_components`): 
@@ -309,13 +329,16 @@ class Chunker:
             turn_data (list[NormalizedMessage]): 파서를 통해 추출된 1턴 분량의 정규화 메시지 객체 리스트.
 
         Returns:
-            list[Chunk]: 처리가 완료된 최종 Chunk 객체들의 리스트. 
-                         (항상 인덱스 0에는 맥락 청크가 위치하며, 이어서 코드 청크들이 배치된다.)
+            tuple[list[Chunk], dict[str, str]]:
+                - chunks: 처리가 완료된 최종 Chunk 객체들의 리스트.
+                  (항상 인덱스 0에는 맥락 청크가 위치하며, 이어서 코드 청크들이 배치된다.)
+                - file_sources: `[Write]` 로 쓰인 `file_path → 전체 본문` 맵. Contextual
+                  Retrieval 의 파일 단위 문서(경로 ①) 로 쓰인다.
         """
-        context_chunk, code_chunks = self._extract_turn_components(turn_data)
+        context_chunk, code_chunks, file_sources = self._extract_turn_components(turn_data)
         refined_code_chunks = self._split_code_by_ast(code_chunks)
         # 최종적으로 쪼개진 결과에 chunk_id 부여
         parent_id = context_chunk.metadata.chunk_id
         for i, chunk in enumerate(refined_code_chunks):
             chunk.metadata.chunk_id = str(uuid.uuid5(self.UUID_NAMESPACE, f"{parent_id}_code_{i}"))
-        return [context_chunk] + refined_code_chunks
+        return [context_chunk] + refined_code_chunks, file_sources

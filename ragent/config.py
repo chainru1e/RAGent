@@ -35,6 +35,12 @@ LONG_DENSE_SIZE = 1024
 
 MAX_CHUNK_SIZE = 1000
 
+# 파일 단위 Contextual Retrieval 문서 길이 상한(문자수).
+# system + 파일 문서 + chunk + 지시문이 LLM 서버 n_ctx(4096 토큰) 안에 들어
+# 오도록 MAX_TURN_CHARS 와 동일한 budget(6000) 으로 둔다. 초과 파일은 AST
+# skeleton 으로 압축하고, 그래도 넘으면 head 기준으로 truncate 한다.
+MAX_FILE_DOC_CHARS = 6000
+
 RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
 
 ENABLE_CONTEXTUAL_RETRIEVAL = True

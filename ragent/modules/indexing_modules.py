@@ -15,6 +15,7 @@ from typing import Callable, TypeVar
 from ragent.config import FAILED_CHUNKS_FILE, ensure_dirs
 from ragent.models.parsed_message import NormalizedMessage
 from ragent.modules.chunking_modules import Chunker
+from ragent.modules.code_skeleton import build_file_document
 from ragent.modules.contextual_retrieval_modules import (
     ContextualEnricher,
     serialize_turn,
@@ -82,6 +83,7 @@ def index_turn(
     embedder: HybridEmbedding,
     vectordb: QdrantStorage,
     contextual_enricher: ContextualEnricher | None = None,
+    file_sources: dict[str, str] | None = None,
 ) -> int:
     """단일 턴을 chunk → classify → (enrich) → embed → upsert 하나의 단위로 인덱싱.
 
@@ -90,9 +92,16 @@ def index_turn(
     - 외부 자원 호출(embed_batch, qdrant upsert) 은 transient 실패 대비 retry
     - 영구 실패는 failed_chunks.jsonl 에 append 하여 추후 진단 가능
 
-    contextual_enricher 가 주어지면 코드 청크 각각에 대해 turn 전체를 문서로
-    한 맥락 문장을 생성해 chunk.metadata.context_prefix 에 보관한다. 임베딩
-    입력만 "prefix + payload" 로 합본하고 chunk.payload 와 vectordb 저장값은
+    contextual_enricher 가 주어지면 코드 청크 각각에 대해 **그 청크가 나온 파일**
+    을 문서로 한 맥락 문장을 생성해 chunk.metadata.context_prefix 에 보관한다.
+    파일 문서의 우선순위는:
+        file_sources[path]      # ① 동일 turn 의 Write (temporal consistency 보장)
+        ?? serialize_turn(turn) # ③ 최후 fallback (직전 Write 가 없는 Edit-origin 등)
+    file_sources(①) 가 항상 우선한다 — 청크가 그 파일 버전에 속함이 보장되기
+    때문. file_sources 가 None 이면 chunker.process_turn 이 돌려준 turn 내
+    Write 맵을 사용한다.
+
+    임베딩 입력만 "prefix + payload" 로 합본하고 chunk.payload 와 vectordb 저장값은
     원본을 유지한다(검색 결과로 prefix 가 노출되지 않도록).
     """
     if not turn:
@@ -105,21 +114,44 @@ def index_turn(
 
     try:
         # deterministic, no transient failure mode → retry unnecessary
-        chunks = chunker.process_turn(turn)
+        chunks, chunked_file_sources = chunker.process_turn(turn)
         if not chunks:
             logger.warning("indexer: no chunks produced (%s)", turn_summary)
             return 0
+
+        # 호출자가 file_sources 를 명시하지 않으면 이번 turn 의 Write 맵(경로 ①) 사용.
+        if file_sources is None:
+            file_sources = chunked_file_sources
 
         context_chunk = chunks[0]
         intent = intent_classifier.classify(context_chunk.payload).category
 
         if contextual_enricher is not None and len(chunks) > 1:
-            turn_text = serialize_turn(turn)
+            code_chunks = chunks[1:]
+            # 같은 file_path 가 연속 호출되도록 정렬 → 파일 문서 byte 동일 →
+            # LLM KV-cache 재사용. 정렬은 enrich 순서에만 쓰고, 임베딩/upsert 는
+            # context_prefix 를 in-place 로 채운 원래 chunks 리스트를 그대로 쓴다.
+            ordered = sorted(code_chunks, key=lambda c: c.metadata.file_path or "")
+            doc_cache: dict[str, str] = {}  # path → 파일 문서 (turn 내 메모이즈)
+            fallback_turn_text: str | None = None  # serialize_turn 은 필요할 때 1회만
+
             t0 = time.time()
             enriched = 0
-            for code_chunk in chunks[1:]:
+            for code_chunk in ordered:
+                path = code_chunk.metadata.file_path
+                raw = (file_sources or {}).get(path)           # ① 동일 turn Write
+                if raw is not None:
+                    document = doc_cache.get(path)
+                    if document is None:
+                        document = build_file_document(raw, path)
+                        doc_cache[path] = document
+                else:
+                    if fallback_turn_text is None:
+                        fallback_turn_text = serialize_turn(turn)  # ③ fallback
+                    document = fallback_turn_text
+
                 prefix = contextual_enricher.generate_prefix(
-                    turn_text, code_chunk.payload
+                    document, code_chunk.payload
                 )
                 if prefix:
                     code_chunk.metadata.context_prefix = prefix

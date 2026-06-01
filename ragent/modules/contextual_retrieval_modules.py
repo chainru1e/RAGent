@@ -1,13 +1,15 @@
-"""Turn 단위 Contextual Retrieval 전처리.
+"""파일 단위 Contextual Retrieval 전처리.
 
 각 코드 청크 앞에 LLM 이 생성한 짧은 맥락 문장(prefix) 을 붙여 임베딩 검색
-품질을 높이는 전처리 모듈. "전체 문서" 는 현재 turn 전체이고, "대상" 은 한
-개의 코드 청크이며, 청크가 그 turn 안에서 어떤 의도/맥락으로 등장했는지
-한 문장으로 설명하게 한다.
+품질을 높이는 전처리 모듈. "전체 문서(document)" 는 그 청크가 나온 **파일
+전체**(큰 파일은 AST skeleton 으로 압축) 이고, "대상" 은 한 개의 코드 청크이며,
+청크가 그 **파일** 안에서 어떤 역할/책임을 하는지(위치/맥락) 한 문장으로
+설명하게 한다. 문서 자체는 index_turn 이 build_file_document 로 만들어 주입한다.
 
-KV cache 친화성: system prompt 는 호출 간 고정. user prompt 는 turn 텍스트를
-앞쪽에 두고(같은 turn 안의 청크들 사이에 byte 동일), 청크 텍스트와 지시문을
-뒤쪽에 둔다. 따라서 system + turn 텍스트까지가 동일 prefix 로 캐시 가능.
+KV cache 친화성: system prompt 는 호출 간 고정. user prompt 는 파일 문서를
+앞쪽에 두고(같은 파일에서 나온 청크들 사이에 byte 동일), 청크 텍스트와 지시문을
+뒤쪽에 둔다. 따라서 system + 파일 문서까지가 동일 prefix 로 캐시 가능 — index_turn
+이 같은 file_path 청크를 연속 호출하는 이유다.
 
 실패 격리: generate_prefix 는 예외/빈 응답/타임아웃 시 None 을 반환하며 절대
 예외를 밖으로 던지지 않는다. index_turn 은 None 인 청크를 prefix 없이 진행.
@@ -35,29 +37,30 @@ MAX_PREFIX_CHARS = 400
 
 SYSTEM_PROMPT = """
     You are a coding context summarizer.
-    Given a conversation turn (the document) and one extracted code chunk
-    from that turn, write one short sentence that explains how the chunk
-    fits into the turn — its intent, or what sub-task it serves.
+    Given a source file (the document) and one code chunk extracted from
+    that file, write one short sentence that explains what role or
+    responsibility the chunk has within the whole file — where it sits and
+    what it is for.
 
     Do not restate or summarize the chunk's contents.
-    Add only context that is missing from the chunk itself (user intent,
-    which step of the task this chunk belongs to).
+    Add only context that situates the chunk within the file (which part of
+    the file/module it belongs to, what responsibility it serves).
     Reply with the sentence only, no preamble.
 """
 
 
-# turn_text 가 user prompt 맨 앞에 오도록 배치. 청크와 지시문은 뒤로.
+# 파일 문서가 user prompt 맨 앞에 오도록 배치. 청크와 지시문은 뒤로 (KV-cache 친화).
 USER_PROMPT_TEMPLATE = """<document>
-{turn_text}
+{document_text}
 </document>
 
-Here is the chunk we want to situate within the document:
+Here is the chunk we want to situate within the file:
 <chunk>
 {chunk_text}
 </chunk>
 
-Give one short sentence describing how this chunk fits within the turn
-(its purpose or the user intent it serves), not what its contents are.
+Give one short sentence describing what role this chunk plays within the
+file (its position or responsibility), not what its contents are.
 Reply with the sentence only."""
 
 
@@ -150,17 +153,20 @@ class ContextualEnricher:
     def __init__(self):
         self.llm_client = LLMClient(system_prompt=SYSTEM_PROMPT)
 
-    def generate_prefix(self, source_turn_text: str, chunk_text: str) -> str | None:
+    def generate_prefix(self, document_text: str, chunk_text: str) -> str | None:
         """단일 청크에 대한 맥락 문장을 생성한다.
+
+        document_text 는 그 청크가 나온 파일 문서(원문 또는 skeleton/truncated)
+        이며, fallback 시에는 serialize_turn 결과가 들어올 수 있다.
 
         실패(예외/빈 응답/타임아웃) 시 None 을 반환하고 예외는 밖으로 던지지
         않는다. 호출자(index_turn) 는 None 인 경우 prefix 없이 진행한다.
         """
-        if not source_turn_text or not chunk_text:
+        if not document_text or not chunk_text:
             return None
 
         prompt = USER_PROMPT_TEMPLATE.format(
-            turn_text=source_turn_text,
+            document_text=document_text,
             chunk_text=chunk_text,
         )
 
