@@ -1,15 +1,21 @@
-"""파일 단위 Contextual Retrieval 전처리.
+"""Contextual Retrieval 전처리 (문서 단위 선택 가능: turn | file).
 
 각 코드 청크 앞에 LLM 이 생성한 짧은 맥락 문장(prefix) 을 붙여 임베딩 검색
-품질을 높이는 전처리 모듈. "전체 문서(document)" 는 그 청크가 나온 **파일
-전체**(큰 파일은 AST skeleton 으로 압축) 이고, "대상" 은 한 개의 코드 청크이며,
-청크가 그 **파일** 안에서 어떤 역할/책임을 하는지(위치/맥락) 한 문장으로
-설명하게 한다. 문서 자체는 index_turn 이 build_file_document 로 만들어 주입한다.
+품질을 높이는 전처리 모듈. "대상" 은 한 개의 코드 청크이고, "문서(document)" 는
+granularity ablation 에 따라 둘 중 하나다:
+- file: 그 청크가 나온 **파일 전체**(큰 파일은 AST skeleton 압축). 청크가 파일
+  안에서 어떤 역할/책임을 하는지 설명.
+- turn: 그 청크가 나온 **turn 전체**(serialize_turn). 청크가 turn 안에서 어떤
+  의도/하위작업으로 등장했는지 설명.
+문서 선택은 index_turn 이 하고, 어떤 종류의 문서인지를 doc_kind 로 함께 넘긴다.
+프롬프트 세트는 모드가 아니라 doc_kind(실제 문서 종류) 에 맞춘다 — 그래야 file
+모드의 ③ fallback(turn 문서) 처럼 모드≠문서 인 경우에도 일관된다(ablation 오염
+방지).
 
-KV cache 친화성: system prompt 는 호출 간 고정. user prompt 는 파일 문서를
-앞쪽에 두고(같은 파일에서 나온 청크들 사이에 byte 동일), 청크 텍스트와 지시문을
-뒤쪽에 둔다. 따라서 system + 파일 문서까지가 동일 prefix 로 캐시 가능 — index_turn
-이 같은 file_path 청크를 연속 호출하는 이유다.
+KV cache 친화성: 한 run 내 granularity 는 고정이므로 system prompt 도 고정 →
+캐시 유지. user prompt 는 문서를 앞쪽에 두고(같은 문서를 공유하는 청크들 사이에
+byte 동일), 청크 텍스트와 지시문을 뒤쪽에 둔다. file 모드는 index_turn 이 같은
+file_path 청크를 연속 호출해 파일 문서 prefix 를 재사용한다.
 
 실패 격리: generate_prefix 는 예외/빈 응답/타임아웃 시 None 을 반환하며 절대
 예외를 밖으로 던지지 않는다. index_turn 은 None 인 청크를 prefix 없이 진행.
@@ -35,7 +41,13 @@ MAX_TURN_CHARS = 6000
 MAX_PREFIX_CHARS = 400
 
 
-SYSTEM_PROMPT = """
+# 프롬프트 세트는 모드(turn/file) 가 아니라 **실제 주입된 문서 종류(doc_kind)** 에
+# 맞춘다. 그래야 file 모드의 ③ fallback(turn 문서) 처럼 모드≠문서 인 경우에도
+# 프롬프트가 문서와 일관된다(ablation 오염 방지). generate_prefix 가 doc_kind 로
+# 세트를 고른다.
+#
+# file 세트: "이 청크가 파일 전체 안에서 어떤 역할/책임을 하는지".
+SYSTEM_PROMPT_FILE = """
     You are a coding context summarizer.
     Given a source file (the document) and one code chunk extracted from
     that file, write one short sentence that explains what role or
@@ -49,8 +61,23 @@ SYSTEM_PROMPT = """
 """
 
 
-# 파일 문서가 user prompt 맨 앞에 오도록 배치. 청크와 지시문은 뒤로 (KV-cache 친화).
-USER_PROMPT_TEMPLATE = """<document>
+# turn 세트: "이 청크가 turn 안에서 어떤 의도/하위작업으로 등장했는지".
+# (change 3 이전의 turn 기준 원문을 복원. 문서 슬롯 placeholder 만 document_text 로 통일.)
+SYSTEM_PROMPT_TURN = """
+    You are a coding context summarizer.
+    Given a conversation turn (the document) and one extracted code chunk
+    from that turn, write one short sentence that explains how the chunk
+    fits into the turn — its intent, or what sub-task it serves.
+
+    Do not restate or summarize the chunk's contents.
+    Add only context that is missing from the chunk itself (user intent,
+    which step of the task this chunk belongs to).
+    Reply with the sentence only, no preamble.
+"""
+
+
+# 문서가 user prompt 맨 앞에 오도록 배치. 청크와 지시문은 뒤로 (KV-cache 친화).
+USER_PROMPT_TEMPLATE_FILE = """<document>
 {document_text}
 </document>
 
@@ -61,6 +88,20 @@ Here is the chunk we want to situate within the file:
 
 Give one short sentence describing what role this chunk plays within the
 file (its position or responsibility), not what its contents are.
+Reply with the sentence only."""
+
+
+USER_PROMPT_TEMPLATE_TURN = """<document>
+{document_text}
+</document>
+
+Here is the chunk we want to situate within the document:
+<chunk>
+{chunk_text}
+</chunk>
+
+Give one short sentence describing how this chunk fits within the turn
+(its purpose or the user intent it serves), not what its contents are.
 Reply with the sentence only."""
 
 
@@ -151,13 +192,22 @@ class ContextualEnricher:
     """코드 청크 앞에 붙일 맥락 문장을 LLM 으로 생성한다."""
 
     def __init__(self):
-        self.llm_client = LLMClient(system_prompt=SYSTEM_PROMPT)
+        # 기본 system 은 file 세트. 실제 system 은 generate_prefix 가 doc_kind 에
+        # 맞춰 override 로 전환한다(한 run 내 granularity 고정 → system 도 고정 →
+        # KV-cache 유지).
+        self.llm_client = LLMClient(system_prompt=SYSTEM_PROMPT_FILE)
 
-    def generate_prefix(self, document_text: str, chunk_text: str) -> str | None:
+    def generate_prefix(
+        self, document_text: str, chunk_text: str, doc_kind: str = "file"
+    ) -> str | None:
         """단일 청크에 대한 맥락 문장을 생성한다.
 
-        document_text 는 그 청크가 나온 파일 문서(원문 또는 skeleton/truncated)
-        이며, fallback 시에는 serialize_turn 결과가 들어올 수 있다.
+        document_text 는 청크가 나온 문서다. doc_kind 가 문서의 종류를 가리키며
+        프롬프트 세트를 결정한다:
+        - "file": 파일 문서(원문/skeleton/truncated) → file 세트
+        - "turn": turn 직렬화 문서(serialize_turn; turn 모드 또는 file 모드 ③
+          fallback) → turn 세트
+        모드가 아니라 실제 문서 종류에 맞추므로 file 모드의 fallback 도 자동 일관.
 
         실패(예외/빈 응답/타임아웃) 시 None 을 반환하고 예외는 밖으로 던지지
         않는다. 호출자(index_turn) 는 None 인 경우 prefix 없이 진행한다.
@@ -165,7 +215,14 @@ class ContextualEnricher:
         if not document_text or not chunk_text:
             return None
 
-        prompt = USER_PROMPT_TEMPLATE.format(
+        if doc_kind == "turn":
+            system_prompt = SYSTEM_PROMPT_TURN
+            user_template = USER_PROMPT_TEMPLATE_TURN
+        else:
+            system_prompt = SYSTEM_PROMPT_FILE
+            user_template = USER_PROMPT_TEMPLATE_FILE
+
+        prompt = user_template.format(
             document_text=document_text,
             chunk_text=chunk_text,
         )
@@ -173,7 +230,7 @@ class ContextualEnricher:
         try:
             response = self.llm_client.ask(
                 prompt,
-                override_system_prompt=SYSTEM_PROMPT,
+                override_system_prompt=system_prompt,
                 temperature=0.2,
             )
         except Exception:

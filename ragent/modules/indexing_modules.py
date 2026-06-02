@@ -12,6 +12,7 @@ import time
 import traceback
 from typing import Callable, TypeVar
 
+from ragent import config
 from ragent.config import FAILED_CHUNKS_FILE, ensure_dirs
 from ragent.models.parsed_message import NormalizedMessage
 from ragent.modules.chunking_modules import Chunker
@@ -85,6 +86,7 @@ def index_turn(
     contextual_enricher: ContextualEnricher | None = None,
     file_sources: dict[str, str] | None = None,
     file_snapshots: dict[str, str] | None = None,
+    doc_granularity: str | None = None,
 ) -> int:
     """단일 턴을 chunk → classify → (enrich) → embed → upsert 하나의 단위로 인덱싱.
 
@@ -93,18 +95,24 @@ def index_turn(
     - 외부 자원 호출(embed_batch, qdrant upsert) 은 transient 실패 대비 retry
     - 영구 실패는 failed_chunks.jsonl 에 append 하여 추후 진단 가능
 
-    contextual_enricher 가 주어지면 코드 청크 각각에 대해 **그 청크가 나온 파일**
-    을 문서로 한 맥락 문장을 생성해 chunk.metadata.context_prefix 에 보관한다.
-    파일 문서의 우선순위는:
+    contextual_enricher 가 주어지면 코드 청크 각각에 대해 맥락 문장을 생성해
+    chunk.metadata.context_prefix 에 보관한다. 문서 단위(granularity) 는
+    doc_granularity(미지정 시 config.CONTEXTUAL_DOC_GRANULARITY, 기본 "file") 가
+    정하며 ablation 의 turn↔file arm 을 가른다(none arm 은 ENABLE 플래그가 담당):
+    - "turn": 모든 코드 청크의 문서 = serialize_turn(turn). doc_kind="turn".
+    - "file": 파일 문서를 다음 우선순위로 고른다.
         file_sources[path]      # ① 동일 turn 의 Write (temporal consistency 보장)
         ?? file_snapshots[path] # ② 세션 전체에서 모은 latest Write 스냅샷
-        ?? serialize_turn(turn) # ③ 최후 fallback (직전 Write 가 없는 Edit-origin 등)
-    file_sources(①) 가 항상 우선한다 — 청크가 그 파일 버전에 속함이 보장되기
-    때문. file_sources 가 None 이면 chunker.process_turn 이 돌려준 turn 내
-    Write 맵을 사용한다.
-
-    임베딩 입력만 "prefix + payload" 로 합본하고 chunk.payload 와 vectordb 저장값은
-    원본을 유지한다(검색 결과로 prefix 가 노출되지 않도록).
+        → build_file_document → doc_kind="file"
+        ?? serialize_turn(turn) # ③ 최후 fallback (직전 Write 없는 Edit-origin 등)
+                                #    → doc_kind="turn" (문서가 turn 이므로)
+      file_sources(①) 가 항상 우선한다 — 청크가 그 파일 버전에 속함이 보장되기
+      때문. file_sources 가 None 이면 chunker.process_turn 이 돌려준 turn 내
+      Write 맵을 사용한다.
+    알 수 없는 granularity 값은 "file" 로 폴백하고 warning 을 남긴다(예외 금지).
+    doc_kind 를 enricher 에 함께 넘겨 프롬프트 세트를 문서 종류에 맞춘다(ablation
+    오염 방지). 임베딩 입력만 "prefix + payload" 로 합본하고 chunk.payload 와
+    vectordb 저장값은 원본을 유지한다(검색 결과로 prefix 가 노출되지 않도록).
     """
     if not turn:
         return 0
@@ -129,40 +137,59 @@ def index_turn(
         intent = intent_classifier.classify(context_chunk.payload).category
 
         if contextual_enricher is not None and len(chunks) > 1:
+            gran = doc_granularity or config.CONTEXTUAL_DOC_GRANULARITY
+            if gran not in ("turn", "file"):
+                logger.warning(
+                    "indexer: unknown doc_granularity %r, falling back to 'file' (%s)",
+                    gran, turn_summary,
+                )
+                gran = "file"
+
             code_chunks = chunks[1:]
-            # 같은 file_path 가 연속 호출되도록 정렬 → 파일 문서 byte 동일 →
-            # LLM KV-cache 재사용. 정렬은 enrich 순서에만 쓰고, 임베딩/upsert 는
-            # context_prefix 를 in-place 로 채운 원래 chunks 리스트를 그대로 쓴다.
+            # file 모드: 같은 file_path 가 연속 호출되도록 정렬 → 파일 문서 byte
+            # 동일 → LLM KV-cache 재사용. turn 모드는 모두 동일 문서라 정렬 무의미
+            # 하나 분기를 단순하게 두기 위해 동일 경로를 쓴다. 정렬은 enrich 순서
+            # 에만 쓰고, 임베딩/upsert 는 context_prefix 를 in-place 로 채운 원래
+            # chunks 리스트를 그대로 쓴다.
             ordered = sorted(code_chunks, key=lambda c: c.metadata.file_path or "")
             doc_cache: dict[str, str] = {}  # path → 파일 문서 (turn 내 메모이즈)
-            fallback_turn_text: str | None = None  # serialize_turn 은 필요할 때 1회만
+            turn_text: str | None = None    # serialize_turn 은 필요할 때 1회만
 
             t0 = time.time()
             enriched = 0
             for code_chunk in ordered:
-                path = code_chunk.metadata.file_path
-                raw = (file_sources or {}).get(path)           # ① 동일 turn Write
-                if raw is None and file_snapshots:
-                    raw = file_snapshots.get(path)             # ② 세션 전체 스냅샷
-                if raw is not None:
-                    document = doc_cache.get(path)
-                    if document is None:
-                        document = build_file_document(raw, path)
-                        doc_cache[path] = document
-                else:
-                    if fallback_turn_text is None:
-                        fallback_turn_text = serialize_turn(turn)  # ③ fallback
-                    document = fallback_turn_text
+                if gran == "turn":
+                    if turn_text is None:
+                        turn_text = serialize_turn(turn)
+                    document = turn_text
+                    doc_kind = "turn"
+                else:  # file
+                    path = code_chunk.metadata.file_path
+                    raw = (file_sources or {}).get(path)       # ① 동일 turn Write
+                    if raw is None and file_snapshots:
+                        raw = file_snapshots.get(path)         # ② 세션 전체 스냅샷
+                    if raw is not None:
+                        document = doc_cache.get(path)
+                        if document is None:
+                            document = build_file_document(raw, path)
+                            doc_cache[path] = document
+                        doc_kind = "file"
+                    else:
+                        if turn_text is None:
+                            turn_text = serialize_turn(turn)   # ③ fallback
+                        document = turn_text
+                        doc_kind = "turn"
 
                 prefix = contextual_enricher.generate_prefix(
-                    document, code_chunk.payload
+                    document, code_chunk.payload, doc_kind=doc_kind
                 )
                 if prefix:
                     code_chunk.metadata.context_prefix = prefix
                     enriched += 1
             logger.info(
-                "indexer: contextual prefixes generated for %d/%d code chunks in %.2fs (%s)",
-                enriched, len(chunks) - 1, time.time() - t0, turn_summary,
+                "indexer: contextual prefixes generated for %d/%d code chunks "
+                "(granularity=%s) in %.2fs (%s)",
+                enriched, len(chunks) - 1, gran, time.time() - t0, turn_summary,
             )
 
         texts = [
