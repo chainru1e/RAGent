@@ -12,6 +12,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import RLock
@@ -43,6 +44,15 @@ class RAGentServer:
         self._vectordb_cache: dict[str, QdrantStorage] = {}
         self._lock = RLock()
         self._save_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+
+        # /stats 엔드포인트가 노출할 작업 상태. launcher 콘솔 출력 외에는 사용처 없음.
+        self._stats_lock = threading.Lock()
+        self._current_task: dict[str, Any] | None = None
+        self._last_completed: dict[str, Any] | None = None
+        self._search_lock = threading.Lock()
+        self._active_searches: list[dict[str, Any]] = []
+        self._last_search: dict[str, Any] | None = None
+
         self._save_worker_thread = threading.Thread(
             target=self._save_worker,
             name="ragent-save-worker",
@@ -72,14 +82,36 @@ class RAGentServer:
     def _save_worker(self) -> None:
         while True:
             request = self._save_queue.get()
+            session_id = request.get("session_id", "?")
+            started_at = time.time()
+            with self._stats_lock:
+                self._current_task = {
+                    "kind": "save",
+                    "session_id": session_id,
+                    "started_at": started_at,
+                }
+            status = "ok"
+            chunks_indexed = 0
             try:
-                self._process_save(request)
+                chunks_indexed = self._process_save(request)
             except Exception:
+                status = "failed"
                 logger.exception("Save worker: unhandled error for %s", request)
             finally:
+                duration = time.time() - started_at
+                with self._stats_lock:
+                    self._last_completed = {
+                        "kind": "save",
+                        "session_id": session_id,
+                        "duration_s": round(duration, 3),
+                        "finished_at": time.time(),
+                        "status": status,
+                        "chunks_indexed": chunks_indexed,
+                    }
+                    self._current_task = None
                 self._save_queue.task_done()
 
-    def _process_save(self, request: dict[str, Any]) -> None:
+    def _process_save(self, request: dict[str, Any]) -> int:
         session_id = request.get("session_id", "")
         transcript_path = request.get("transcript_path", "")
 
@@ -89,7 +121,7 @@ class RAGentServer:
 
             if not last_turn:
                 logger.warning("Save: no turns found in transcript %s", transcript_path)
-                return
+                return 0
 
             vectordb = self._get_vectordb(transcript_path)
             count = index_turn(
@@ -107,6 +139,7 @@ class RAGentServer:
             )
 
         logger.info("Save: indexed %d chunks for session %s", count, session_id)
+        return count
 
     def search(self, request: dict[str, Any]) -> dict[str, Any]:
         session_id = request.get("session_id", "")
@@ -122,19 +155,75 @@ class RAGentServer:
         if not prompt:
             return {"ok": False, "chunks": [], "context": "", "reason": "missing_prompt"}
 
-        with self._lock:
-            vectordb = self._get_vectordb(transcript_path)
-            retriever = Retriever(
-                vectordb=vectordb,
-                embedder=self.embedder,
-            )
-            chunks = retriever.retrieve(prompt)
+        t0 = time.time()
+        entry = {"session_id": session_id, "started_at": t0}
+        with self._search_lock:
+            self._active_searches.append(entry)
+
+        status = "ok"
+        chunks: list[Chunk] = []
+        context = ""
+        try:
+            with self._lock:
+                vectordb = self._get_vectordb(transcript_path)
+                retriever = Retriever(
+                    vectordb=vectordb,
+                    embedder=self.embedder,
+                )
+                chunks = retriever.retrieve(prompt)
+            context = self._format_context_for_claude(chunks)
+        except Exception:
+            status = "failed"
+            raise
+        finally:
+            duration = time.time() - t0
+            with self._search_lock:
+                try:
+                    self._active_searches.remove(entry)
+                except ValueError:
+                    pass
+                self._last_search = {
+                    "session_id": session_id,
+                    "result_count": len(chunks),
+                    "context_len": len(context),
+                    "duration_s": round(duration, 3),
+                    "finished_at": time.time(),
+                    "status": status,
+                }
 
         logger.info("Search: retrieved %d chunks for session %s", len(chunks), session_id)
         return {
             "ok": True,
             "chunks": [self._chunk_to_dict(chunk) for chunk in chunks],
-            "context": self._format_context_for_claude(chunks),
+            "context": context,
+        }
+
+    def stats(self) -> dict[str, Any]:
+        with self._stats_lock:
+            current = dict(self._current_task) if self._current_task else None
+            last_save = dict(self._last_completed) if self._last_completed else None
+        if current is not None:
+            current["elapsed_s"] = round(time.time() - current["started_at"], 3)
+
+        with self._search_lock:
+            active = list(self._active_searches)
+            last_search = dict(self._last_search) if self._last_search else None
+
+        currently_searching = None
+        if active:
+            oldest = min(active, key=lambda e: e["started_at"])
+            currently_searching = {
+                "session_id": oldest["session_id"],
+                "started_at": oldest["started_at"],
+                "elapsed_s": round(time.time() - oldest["started_at"], 3),
+            }
+
+        return {
+            "queue_pending": self._save_queue.qsize(),
+            "currently_processing": current,
+            "currently_searching": currently_searching,
+            "last_completed": last_save,
+            "last_search": last_search,
         }
 
     def start_server(self):
@@ -143,9 +232,16 @@ class RAGentServer:
         app = self
 
         class RequestHandler(BaseHTTPRequestHandler):
+            # launcher가 주기적으로 폴링하는 경로 — 로그 도배 방지용
+            _SILENT_PATHS = ("/stats", "/health")
+
             def do_GET(self) -> None:
                 if self.path == "/health":
                     self._write_json(200, {"ok": True, "status": "healthy"})
+                    return
+
+                if self.path == "/stats":
+                    self._write_json(200, app.stats())
                     return
 
                 self._write_json(404, {"ok": False, "error": "not_found"})
@@ -172,6 +268,12 @@ class RAGentServer:
                     self._write_json(500, {"ok": False, "error": str(exc)})
 
             def log_message(self, format: str, *args: Any) -> None:
+                # launcher의 /stats /health 폴링은 DEBUG 라인도 ragent.log에 남지 않도록 침묵.
+                request_line = args[0] if args else ""
+                if isinstance(request_line, str) and any(
+                    f" {p} " in request_line for p in self._SILENT_PATHS
+                ):
+                    return
                 logger.debug(format, *args)
 
             def _read_json(self) -> dict[str, Any]:
