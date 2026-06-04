@@ -23,6 +23,11 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+# 오프라인 검색 평가 하네스(ragent/evaluation) 전용 의존성.
+# 프로덕션 런타임에는 불필요하므로 별도 extra 로 분리한다: pip install -e ".[eval]"
+eval = [
+    "ranx",
+]
 
 [tool.setuptools.packages.find]
 include = ["ragent*"]
