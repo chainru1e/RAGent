@@ -1,12 +1,22 @@
 import json
+import logging
+
 import json_repair
 
-from ragent.config import RERANKING_MODEL
+from ragent.config import RERANKING_MODEL, RERANK_BATCH_SIZE, RERANK_MAX_LENGTH
 from ragent.models.chunk import Chunk
 from ragent.models.vector import HybridVector
 from ragent.models.transformed_query import TransformedQuery
 from ragent.llm_client import LLMClient
 from sentence_transformers import CrossEncoder
+
+logger = logging.getLogger("ragent")
+
+# rerank() 가 predict 2차 재시도까지 실패했을 때 쓰는 pass-through 점수.
+# static_cutoff(0.3) 문턱 이상의 균일값이라, 전 청크가 cutoff 에 전멸하지 않고
+# (= reranking 생략, hybrid 후보 순서 유지) dynamic_cutoff 도 낙폭 0 이라 통과한다.
+# 0.0 으로 삼키지 않기 위한 degrade 경로이지 정상 점수가 아니다.
+RERANK_FALLBACK_SCORE = 0.5
 
 def static_cutoff(scored_chunks: list[tuple[Chunk, float]], threshold: float) -> list[tuple[Chunk, float]]:
     """
@@ -101,6 +111,9 @@ class Reranker:
     """검색된 청크들을 Cross-Encoder 모델을 이용해 재평가하고 정렬하는 클래스"""
     def __init__(self):
         self.model = CrossEncoder(RERANKING_MODEL)
+        # 캡이 설정된 경우에만 적용한다(None 이면 모델 기본 max_length 유지).
+        if RERANK_MAX_LENGTH is not None:
+            self.model.max_length = RERANK_MAX_LENGTH
 
     def rerank(self, query: str, chunks: list[Chunk]) -> list[tuple[Chunk, float]]:
         """
@@ -111,18 +124,38 @@ class Reranker:
             chunks (list[Chunk]): 유사도를 평가할 대상 청크 객체 리스트.
 
         Returns:
-            list[tuple[Chunk, float]]: (Chunk, 점수) 형태의 튜플 리스트. 
+            list[tuple[Chunk, float]]: (Chunk, 점수) 형태의 튜플 리스트.
                                        점수가 높은 순으로 내림차순 정렬되어 반환된다.
+
+        장애 처리:
+            predict 가 긴 청크에서 MPS OOM 등으로 예외를 내면 batch_size=1 로 1회
+            재시도한다. 재시도까지 실패하면 logger.exception 으로 원인을 남기고,
+            전 청크에 0.0 을 반환하는 대신 **입력 순서를 보존한 균일 fallback 점수**
+            (RERANK_FALLBACK_SCORE, 문턱 0.3 이상)로 degrade 한다. 그래야
+            static_cutoff/dynamic_cutoff 가 전 청크를 전멸시키지 않고 hybrid 후보가
+            그대로 유지된다(= reranking 생략). 어떤 경로에서도 전 청크 0.0 은 반환하지 않는다.
         """
         if not chunks:
             return []
 
         pairs = [[query, chunk.payload or ""] for chunk in chunks]
-        
+
         try:
-            scores = self.model.predict(pairs)
-        except Exception as e:
-            return [(chunk, 0.0) for chunk in chunks]
+            scores = self.model.predict(pairs, batch_size=RERANK_BATCH_SIZE)
+        except Exception:
+            logger.exception(
+                "reranker: predict failed at batch_size=%s; retrying with batch_size=1",
+                RERANK_BATCH_SIZE,
+            )
+            try:
+                scores = self.model.predict(pairs, batch_size=1)
+            except Exception:
+                logger.exception(
+                    "reranker: predict failed at batch_size=1; "
+                    "degrading to pass-through (uniform fallback score, no rerank)"
+                )
+                # 입력 순서 보존 + 균일 점수(≥0.3): cutoff 가 전멸시키지 않음.
+                return [(chunk, RERANK_FALLBACK_SCORE) for chunk in chunks]
 
         scored_chunks = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
         return scored_chunks
