@@ -21,9 +21,9 @@ HEARTBEAT_SECONDS = 30
 # exe 와 같은 디렉터리에 놓인 별도 실행파일로 띄운다. dev(소스) 모드에서는
 # python -m <module> 로 띄운다. 아래 (module, exe_name) 쌍이 그 매핑이다.
 LLM_SERVER_MODULE = "ragent.llm_server"
-LLM_SERVER_EXE = "ragent-llm-server"
+LLM_SERVER_EXE = "LLMServer"
 RAGENT_SERVER_MODULE = "ragent.server"
-RAGENT_SERVER_EXE = "ragent-server"
+RAGENT_SERVER_EXE = "Server"
 
 
 def _service_command(module: str, exe_name: str) -> list[str]:

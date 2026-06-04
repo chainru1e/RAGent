@@ -10,10 +10,11 @@ import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-# frozen(개별 exe) 빌드 시 hook 진입점이 빌드되는 실행파일 이름(확장자 제외).
-# launcher 가 기대하는 ragent-llm-server / ragent-server 와 동일한 명명 규약이며,
-# .spec 산출물 이름이 이 값과 일치해야 install 이 올바른 hook 경로를 등록한다.
-HOOK_EXE = "ragent-hook"
+# frozen(개별 exe) 빌드 시 hook 진입점(__main__.py)이 빌드되는 실행파일 이름
+# (확장자 제외). exe 이름은 PascalCase(Launcher/LLMServer/Server/Install)이고
+# hook 만 RAGent-hook 이다. .spec 산출물 이름이 이 값과 일치해야 install 이
+# 올바른 hook 경로를 등록한다.
+HOOK_EXE = "RAGent-hook"
 
 
 class BaseAdapter(ABC):
@@ -67,7 +68,7 @@ class BaseAdapter(ABC):
 
         셸 종속 문법(VAR=value 프리픽스 등)을 쓰지 않아 cmd(Windows)/sh(POSIX)
         양쪽에서 동작한다. 어댑터 선택자는 --adapter 인자로 명령에 직접 박는다.
-        frozen(PyInstaller) 빌드는 실행 파일과 같은 디렉터리의 ragent-hook exe 를,
+        frozen(PyInstaller) 빌드는 실행 파일과 같은 디렉터리의 RAGent-hook exe 를,
         소스 모드는 활성 파이썬의 `-m ragent` 를 가리킨다(ragent 패키지가 import
         가능해야 함 = `pip install -e .`). 공백이 든 경로를 위해 실행 파일은
         항상 따옴표로 감싼다.
@@ -82,7 +83,7 @@ class BaseAdapter(ABC):
     def is_ragent_hook(command: str) -> bool:
         """주어진 명령이 (버전 불문) RAGent hook 인지 판별한다(멱등 재설치용).
 
-        소스 모드 명령(`-m ragent`)과 frozen 모드 명령(`ragent-hook` exe)을 모두
+        소스 모드 명령(`-m ragent`)과 frozen 모드 명령(`RAGent-hook` exe)을 모두
         인식한다. 구버전 명령(PYTHONPATH/RAGENT_ADAPTER 프리픽스가 붙은
         `-m ragent`) 역시 `-m ragent` 토큰으로 함께 제거된다.
         """
