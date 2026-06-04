@@ -63,13 +63,6 @@ STATIC_CUTOFF_THRESHOLD = 0.3
 DYNAMIC_CUTOFF_DROP = 0.1
 DYNAMIC_CUTOFF_MIN_CHUNKS = 1
 
-# reranker(CrossEncoder.model.predict) 호출 파라미터.
-# production Reranker.rerank() 가 긴 청크에서 MPS OOM 을 except 로 삼켜 전부 0.0 을
-# 돌려주던 문제를 우회하기 위해, 평가 러너는 model.predict 를 직접 호출하면서
-# 아래 값을 명시한다.
-RERANK_BATCH_SIZE = 1     # 진단에서 OOM 없이 동작 확인된 값
-RERANK_MAX_LENGTH = None  # 자르지 않음. production fix에서 캡이 정해지면 동일 값으로 맞춘다
-
 
 @dataclass
 class RetrievalConfig:
@@ -300,18 +293,13 @@ class EvalRetriever:
         production(retrieve)과 동일하게 **원본 쿼리** 를 reranker 입력으로 쓴다
         (transform 된 쿼리가 아님). reranker 는 chunk.payload(=본문 text)를 본다.
 
-        ⚠️ production Reranker.rerank() 의 OOM-삼킴 fallback 을 **의도적으로 우회**한다.
-        production 의 rerank() 는 긴 청크에서 model.predict() 가 MPS OOM 을 내면
-        except 로 삼켜 전 청크에 0.0 을 돌려주는데(점수 소실 → ablation 무효화),
-        평가는 점수를 보존해야 하므로 rerank() 를 거치지 않고 CrossEncoder 의
-        model.predict 를 직접 호출한다. pairs 구성([query, payload or ""])은
-        production 과 동일하다.
-
-        RERANK_BATCH_SIZE / RERANK_MAX_LENGTH 는 production 정상화(후속 작업) 후
-        동일 값으로 mirror 해야 eval 이 production 을 그대로 반영한다.
-
-        predict 가 예외를 던지면 0.0 으로 삼키지 않고 그대로 전파한다 — 호출부
-        run_config 의 쿼리 단위 try/except(로그+스킵+카운트)가 처리하도록 둔다.
+        정상화된 production Reranker.rerank() 에 그대로 **위임**한다. 과거에는
+        production rerank() 가 긴 청크의 MPS OOM 을 except 로 삼켜 전 청크에 0.0 을
+        돌려줘(점수 소실 → ablation 무효화) model.predict 를 직접 호출해 우회했지만,
+        production 이 batch_size 재시도 + pass-through fallback(무음 0.0 제거)로
+        정상화됐으므로 우회는 불필요하다. rerank() 를 그대로 호출하면
+        batch_size/max_length/fallback 동작을 production 과 공유해(러너 자체 상수 불필요)
+        eval 이 production 을 가장 충실히 반영한다.
         """
         chunks = [
             Chunk(
@@ -322,16 +310,7 @@ class EvalRetriever:
         ]
         if not chunks:
             return []
-
-        pairs = [[query, chunk.payload or ""] for chunk in chunks]
-
-        model = self.reranker.model
-        if RERANK_MAX_LENGTH is not None:
-            model.max_seq_length = RERANK_MAX_LENGTH
-        # rerank() 우회: OOM 을 삼키지 않고 점수를 보존하기 위해 직접 predict.
-        scores = model.predict(pairs, batch_size=RERANK_BATCH_SIZE)
-
-        scored = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
+        scored = self.reranker.rerank(query, chunks)  # 정상화된 production 경로
         return [(c.metadata.chunk_id, float(s)) for c, s in scored]
 
     # ---- 단일 쿼리 검색 ---------------------------------------------------
