@@ -21,14 +21,15 @@ chunker / handler 변경 없이 동작한다.
 """
 
 import json
-import sys
 from pathlib import Path
 
 from ragent.adapters.base import BaseAdapter
 from ragent.modules.parsing_modules import CodexParser
 
 _HOOKS_PATH = Path.home() / ".codex" / "hooks.json"
-_RAGENT_DIR = Path(__file__).resolve().parent.parent.parent
+
+# get_adapter(name) 가 ADAPTER_REGISTRY 에서 이 어댑터를 찾는 키.
+_ADAPTER_NAME = "codex"
 
 
 class CodexAdapter(BaseAdapter):
@@ -63,18 +64,13 @@ class CodexAdapter(BaseAdapter):
 
         등록 이벤트: UserPromptSubmit, Stop.
 
-        멱등성: command 문자열에 "-m ragent" 가 포함된 기존 entry 를 모두
+        멱등성: RAGent hook 으로 식별되는(is_ragent_hook) 기존 entry 를 모두
         제거한 뒤 새 hook 을 append. 두 번 호출해도 중복 등록되지 않는다.
         """
-        # NOTE: VAR=value command prefix 는 POSIX 쉘에서만 동작. Codex 가
-        # hook command 를 shell 경유로 실행하는지 공식 문서가 명시하지 않으나
-        # 공식 예시에 $(...) 와 ~ 가 등장하므로 shell layer 를 거친다고 추정.
-        # 이 가정이 깨지면 hook entry 의 env 필드 또는 wrapper script 방식으로
-        # 마이그레이션 필요.
-        cmd = (
-            f"PYTHONPATH={_RAGENT_DIR} RAGENT_ADAPTER=codex "
-            f"{sys.executable} -m ragent"
-        )
+        # 셸 비종속 hook 명령(frozen exe 경로 또는 `-m ragent`)을 BaseAdapter 가
+        # 생성한다. 어댑터 선택자는 --adapter 인자로 전달되므로, Codex 가 command
+        # 를 셸로 실행하든 아니든 env 프리픽스에 의존하지 않는다.
+        cmd = cls.build_hook_command(_ADAPTER_NAME)
         hooks_config = {
             "UserPromptSubmit": [
                 {"hooks": [{"type": "command", "command": cmd, "timeout": 5}]}
@@ -100,7 +96,7 @@ class CodexAdapter(BaseAdapter):
                 entry
                 for entry in existing_hooks[event_name]
                 if not any(
-                    "-m ragent" in h.get("command", "")
+                    cls.is_ragent_hook(h.get("command", ""))
                     for h in entry.get("hooks", [])
                 )
             ]
