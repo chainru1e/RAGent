@@ -43,6 +43,11 @@ MAX_FILE_DOC_CHARS = 6000
 
 RERANKING_MODEL = "BAAI/bge-reranker-v2-m3"
 
+# Reranker(CrossEncoder.predict) 호출 파라미터.
+# 이 값들은 서버 재시작 시 반영된다(Reranker 는 서버 부팅 때 한 번 생성됨).
+RERANK_BATCH_SIZE = 8      # 점수 무관(속도/메모리만). 예외(MPS OOM) 시 1로 재시도.
+RERANK_MAX_LENGTH = None   # 캡 미적용(긴 청크 truncation 품질손실 회피).
+
 ENABLE_CONTEXTUAL_RETRIEVAL = True
 
 # Contextual Retrieval 문서 단위. "turn" | "file". 기본 "file".
