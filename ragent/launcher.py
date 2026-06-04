@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -15,6 +16,37 @@ logger = logging.getLogger("ragent")
 
 POLL_INTERVAL_SECONDS = 2
 HEARTBEAT_SECONDS = 30
+
+# 역할별 개별 exe 빌드 전략. frozen(PyInstaller) 상태에서 각 서비스는 launcher
+# exe 와 같은 디렉터리에 놓인 별도 실행파일로 띄운다. dev(소스) 모드에서는
+# python -m <module> 로 띄운다. 아래 (module, exe_name) 쌍이 그 매핑이다.
+LLM_SERVER_MODULE = "ragent.llm_server"
+LLM_SERVER_EXE = "ragent-llm-server"
+RAGENT_SERVER_MODULE = "ragent.server"
+RAGENT_SERVER_EXE = "ragent-server"
+
+
+def _service_command(module: str, exe_name: str) -> list[str]:
+    """자식 서비스를 띄울 커맨드를 반환한다.
+
+    - dev(소스 실행): [python, "-m", module] — 모듈을 직접 실행.
+    - frozen(exe): launcher exe 와 같은 디렉터리의 형제 exe 경로 하나.
+      frozen 상태에서는 sys.executable 이 파이썬이 아니라 launcher exe 자신을
+      가리키고 "-m module" 도 해석되지 않으므로, 역할별로 빌드된 별도 exe 를
+      직접 실행한다.
+    """
+    if not getattr(sys, "frozen", False):
+        return [sys.executable, "-m", module]
+
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    suffix = ".exe" if os.name == "nt" else ""
+    exe_path = os.path.join(exe_dir, exe_name + suffix)
+    if not os.path.exists(exe_path):
+        raise RuntimeError(
+            f"Bundled service executable not found: {exe_path}. "
+            f"Expected '{exe_name}{suffix}' next to the launcher exe."
+        )
+    return [exe_path]
 
 
 def _wait_until_ready(proc: subprocess.Popen, url: str, name: str, timeout: int = 300) -> None:
@@ -187,7 +219,7 @@ def main() -> None:
         # 2. LLM 서버 — 최대 5분 대기
         print("[2/3] Starting LLM server...")
         llm_proc = subprocess.Popen(
-            [sys.executable, "-m", "ragent.llm_server"],
+            _service_command(LLM_SERVER_MODULE, LLM_SERVER_EXE),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -198,7 +230,7 @@ def main() -> None:
         # 3. RAGent 서버 — 최대 5분 대기
         print("[3/3] Starting RAGent server...")
         server_proc = subprocess.Popen(
-            [sys.executable, "-m", "ragent.server"],
+            _service_command(RAGENT_SERVER_MODULE, RAGENT_SERVER_EXE),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
