@@ -10,6 +10,7 @@ import requests
 
 from ragent.config import LLM_API_BASE_URL, RAGENT_SERVER_URL
 from ragent.logging_config import setup_logging
+from ragent.utils import pause_if_frozen
 from ragent.vectordb_manager import QdrantManager
 
 logger = logging.getLogger("ragent")
@@ -294,6 +295,11 @@ def main() -> None:
         QdrantManager().stop()
         logger.info("All servers stopped")
         print("All servers stopped")
+
+    # frozen(exe) 더블클릭 시 콘솔이 종료와 함께 즉시 닫혀 (특히 비정상 종료)
+    # 원인을 못 보는 문제 방지. 위 finally 의 정리/에러 출력까지 끝난 뒤 대기.
+    # 정상 종료(Ctrl+C)에도 Enter(또는 창 닫기)가 한 번 더 필요해진다.
+    pause_if_frozen()
 
 
 if __name__ == "__main__":
