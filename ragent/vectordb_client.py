@@ -4,10 +4,14 @@ from enum import Enum
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    FieldCondition,
+    Filter,
     Fusion,
     FusionQuery,
+    MatchValue,
     PointStruct,
     Prefetch,
+    ScrollRequest,
     SparseVectorParams,
     VectorParams,
 )
@@ -43,16 +47,104 @@ class QdrantStorage:
             )
             logger.info("Created collection: %s", self.collection_name)
 
+    # ------------------------------------------------------------------ #
+    #  신규: Edit 처리용 메서드                                            #
+    # ------------------------------------------------------------------ #
+
+    def get_latest_version(self, file_path: str, func_name: str) -> int | None:
+        """
+        특정 파일의 특정 함수에 대해 DB에 저장된 현재 최신 버전 번호를 반환한다.
+        
+        is_latest: True인 청크만 조회하여 version 값을 반환한다.
+        DB에 해당 함수가 없으면 None을 반환한다.
+
+        Args:
+            file_path (str): 조회할 파일 경로 (예: "auth.py")
+            func_name (str): 조회할 함수/클래스 이름 (예: "login")
+
+        Returns:
+            int | None: 현재 최신 버전 번호. DB에 없으면 None.
+        """
+        results, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="file_path", match=MatchValue(value=file_path)),
+                    FieldCondition(key="func_name", match=MatchValue(value=func_name)),
+                    FieldCondition(key="is_latest",  match=MatchValue(value=True)),
+                ]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        if not results:
+            return None
+
+        return results[0].payload.get("version", 1)
+
+    def mark_outdated(self, file_path: str, func_name: str) -> int:
+        """
+        특정 파일의 특정 함수에 대해 is_latest: True인 모든 청크를
+        is_latest: False로 변경한다. (Soft Delete)
+
+        새 버전 저장 전에 반드시 호출해야 한다.
+
+        Args:
+            file_path (str): 대상 파일 경로
+            func_name (str): 대상 함수/클래스 이름
+
+        Returns:
+            int: 실제로 업데이트된 청크 수
+        """
+        # is_latest: True인 기존 청크 ID 조회
+        results, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="file_path", match=MatchValue(value=file_path)),
+                    FieldCondition(key="func_name", match=MatchValue(value=func_name)),
+                    FieldCondition(key="is_latest",  match=MatchValue(value=True)),
+                ]
+            ),
+            limit=100,
+            with_payload=False,
+            with_vectors=False,
+        )
+
+        if not results:
+            return 0
+
+        point_ids = [point.id for point in results]
+
+        # is_latest 필드만 False로 덮어씀
+        self.client.set_payload(
+            collection_name=self.collection_name,
+            payload={"is_latest": False},
+            points=point_ids,
+        )
+
+        logger.debug(
+            "Marked %d point(s) as outdated — file: %s, func: %s",
+            len(point_ids), file_path, func_name
+        )
+        return len(point_ids)
+
+    # ------------------------------------------------------------------ #
+    #  기존 메서드 수정                                                    #
+    # ------------------------------------------------------------------ #
+
     def add_point(self, chunk: Chunk):
         meta = chunk.metadata
-        vector = chunk.vector  # HybridVector
+        vector = chunk.vector
 
         point = PointStruct(
             id=meta.chunk_id,
             vector={
                 "dense_short": vector.dense[:SHORT_DENSE_SIZE].tolist(),
                 "dense_long": vector.dense.tolist(),
-                "sparse": vector.sparse  # SparseVector 객체
+                "sparse": vector.sparse
             },
             payload={
                 "text": chunk.payload,
@@ -61,6 +153,10 @@ class QdrantStorage:
                 "file_path": meta.file_path,
                 "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
                 "context_prefix": meta.context_prefix,
+                # 추가된 3개 필드
+                "func_name": meta.func_name,
+                "is_latest": meta.is_latest,
+                "version": meta.version,
             }
         )
 
@@ -72,7 +168,7 @@ class QdrantStorage:
 
         for chunk in chunks:
             meta = chunk.metadata
-            vector = chunk.vector  # HybridVector
+            vector = chunk.vector
 
             points.append(
                 PointStruct(
@@ -89,6 +185,10 @@ class QdrantStorage:
                         "file_path": meta.file_path,
                         "type": meta.type.value if isinstance(meta.type, Enum) else meta.type,
                         "context_prefix": meta.context_prefix,
+                        # 추가된 3개 필드
+                        "func_name": meta.func_name,
+                        "is_latest": meta.is_latest,
+                        "version": meta.version,
                     }
                 )
             )
@@ -96,7 +196,7 @@ class QdrantStorage:
         self.client.upsert(self.collection_name, points)
         logger.debug("Upserted %d points to collection %s", len(points), self.collection_name)
         return len(points)
-    
+
     def payload_to_chunk(self, payload: dict) -> Chunk:
         """Qdrant Payload를 Chunk 객체로 변환합니다."""
         intent_type = None
@@ -104,7 +204,7 @@ class QdrantStorage:
             try:
                 intent_type = IntentCategory(payload.get("type"))
             except ValueError:
-                intent_type = payload.get("type") 
+                intent_type = payload.get("type")
 
         metadata = ChunkMetaData(
             chunk_id=payload.get("chunk_id"),
@@ -112,12 +212,16 @@ class QdrantStorage:
             file_path=payload.get("file_path"),
             type=intent_type,
             context_prefix=payload.get("context_prefix"),
+            # 추가된 3개 필드 복원
+            func_name=payload.get("func_name"),
+            is_latest=payload.get("is_latest", True),
+            version=payload.get("version", 1),
         )
-        
+
         return Chunk(
             metadata=metadata,
             payload=payload.get("text"),
-            vector=None 
+            vector=None
         )
 
     def staged_hybrid_search(self, query_vectors: list[HybridVector], limit: int = 5) -> list[Chunk]:
@@ -128,37 +232,35 @@ class QdrantStorage:
         dense 검색은 short vector로 후보군을 빠르게 추린 뒤, long vector로 정밀 재검색하는 구조로 동작한다.
         이 구조는 MRL 방식으로 학습된 임베딩 모델을 전제로 한다.
 
+        is_latest: True 필터를 적용하여 항상 최신 버전 청크만 반환한다.
+
         Args:
-            query_vector (list[HybridVector]): 검색에 사용할 dense 및 sparse 벡터를 포함한 객체 리스트.
+            query_vectors (list[HybridVector]): 검색에 사용할 dense 및 sparse 벡터를 포함한 객체 리스트.
             limit (int): 최종적으로 반환할 청크의 최대 개수.
 
         Returns:
-            list[Chunk]: RRF 점수 기준으로 정렬된 Chunk 객체 리스트.
+            list[Chunk]: RRF 점수 기준으로 정렬된 최신 버전 Chunk 객체 리스트.
                         검색 결과가 없을 경우 빈 리스트([])를 반환한다.
         """
         if not query_vectors:
             return []
-        
+
         prefetch_branches = []
 
         for query_vector in query_vectors:
-            # MRL Dense 검색 가지 (중첩 구조)
-            # 바깥쪽 Prefetch가 최종적으로 RRF에 전달할 정밀 점수를 생산함
             mrl_dense_branch = Prefetch(
-                query=query_vector.dense.tolist(), # 정밀 비교용 Long Vector
+                query=query_vector.dense.tolist(),
                 using="dense_long",
                 limit=limit * 2,
-                # 안쪽 Prefetch가 고속으로 후보를 먼저 솎아냄
                 prefetch=[
                     Prefetch(
-                        query=query_vector.dense[:SHORT_DENSE_SIZE].tolist(), # 고속 검색용 Short Vector
+                        query=query_vector.dense[:SHORT_DENSE_SIZE].tolist(),
                         using="dense_short",
                         limit=limit * 3
                     )
                 ]
             )
 
-            # Sparse 검색 가지
             sparse_branch = Prefetch(
                 query=query_vector.sparse,
                 using="sparse",
@@ -167,11 +269,18 @@ class QdrantStorage:
 
             prefetch_branches.extend([mrl_dense_branch, sparse_branch])
 
-        # RRF 알고리즘을 통한 점수 융합
+        # 추가: is_latest: True 필터 — 항상 최신 버전만 검색
+        latest_filter = Filter(
+            must=[
+                FieldCondition(key="is_latest", match=MatchValue(value=True))
+            ]
+        )
+
         results = self.client.query_points(
             collection_name=self.collection_name,
             prefetch=prefetch_branches,
             query=FusionQuery(fusion=Fusion.RRF),
+            query_filter=latest_filter,        # 추가
             limit=limit,
             with_payload=True
         )
@@ -179,11 +288,10 @@ class QdrantStorage:
         chunks = [self.payload_to_chunk(point.payload) for point in results.points]
         logger.debug("Hybrid search returned %d results from collection %s", len(chunks), self.collection_name)
         return chunks
-    
+
     def get_stats(self) -> dict:
         try:
             info = self.client.get_collection(self.collection_name)
-
             return {
                 "collection": self.collection_name,
                 "total_points": info.points_count,
@@ -194,6 +302,6 @@ class QdrantStorage:
                 "collection": self.collection_name,
                 "error": str(e)
             }
-    
+
     def close(self):
         self.client.close()
