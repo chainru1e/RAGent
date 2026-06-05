@@ -55,13 +55,16 @@ def _service_command(module: str, exe_name: str) -> list[str]:
     return [exe_path]
 
 
-def _prefetch_models() -> None:
-    """필요한 모델을 미리 받아 둔다.
+def _prefetch_models() -> int:
+    """필요한 모델을 미리 받아 둔다. 이미 HF 캐시에 있으면 네트워크 호출 없이 건너뛴다.
 
-    launcher 콘솔(TTY)에서 받으므로 huggingface_hub 의 pip 스타일 진행바가 그대로
-    보인다. 서버들은 이후 동일 HF 캐시에서 즉시 로드하며, 이미 받아둔 모델은
-    재다운로드 없이 통과한다.
+    실제로 새로 받은 모델 개수를 반환한다(launcher 메시지용). 다운로드는 launcher
+    콘솔(TTY)에서 일어나므로 huggingface_hub 의 pip 스타일 진행바가 그대로 보이고,
+    서버들은 이후 동일 캐시에서 로드한다.
     """
+    # Windows 심볼릭 링크 경고(무해)는 끈다.
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
     from huggingface_hub import hf_hub_download, snapshot_download
 
     from ragent.config import (
@@ -72,20 +75,47 @@ def _prefetch_models() -> None:
         RERANKING_MODEL,
     )
 
-    print("  - LLM (Qwen3.5-9B)")
-    hf_hub_download(repo_id=LLM_REPO_ID, filename=LLM_FILENAME)
+    # 리랭커는 onnx/openvino 변형만 빼고 받는다(transformers 는 safetensors 사용).
+    rerank_ignore = ["*.onnx", "onnx/**", "*.openvino*", "openvino/**"]
 
-    print("  - Embedding (Qwen3-Embedding-0.6B)")
-    hf_hub_download(repo_id=DENSE_EMBEDDING_REPO_ID, filename=DENSE_EMBEDDING_FILENAME)
+    def _file_cached(repo: str, filename: str) -> bool:
+        # local_files_only=True 는 네트워크 없이 캐시만 확인. 없으면 예외 → False.
+        try:
+            hf_hub_download(repo_id=repo, filename=filename, local_files_only=True)
+            return True
+        except Exception:
+            return False
 
-    # 리랭커는 sentence_transformers 가 쓰는 repo 에서 onnx/openvino 변형만 빼고
-    # 받는다(transformers 는 safetensors 사용). 일부 누락돼도 서버가 부족분을 다시
-    # 받으므로 동작엔 지장 없다.
-    print("  - Reranker (bge-reranker-v2-m3)")
-    snapshot_download(
-        repo_id=RERANKING_MODEL,
-        ignore_patterns=["*.onnx", "onnx/**", "*.openvino*", "openvino/**"],
-    )
+    def _repo_cached(repo: str) -> bool:
+        try:
+            snapshot_download(repo_id=repo, local_files_only=True, ignore_patterns=rerank_ignore)
+            return True
+        except Exception:
+            return False
+
+    downloaded = 0
+
+    if not _file_cached(LLM_REPO_ID, LLM_FILENAME):
+        print("  - LLM (Qwen3.5-9B)", flush=True)
+        hf_hub_download(repo_id=LLM_REPO_ID, filename=LLM_FILENAME)
+        downloaded += 1
+
+    if not _file_cached(DENSE_EMBEDDING_REPO_ID, DENSE_EMBEDDING_FILENAME):
+        print("  - Embedding (Qwen3-Embedding-0.6B)", flush=True)
+        hf_hub_download(repo_id=DENSE_EMBEDDING_REPO_ID, filename=DENSE_EMBEDDING_FILENAME)
+        downloaded += 1
+
+    if not _repo_cached(RERANKING_MODEL):
+        print("  - Reranker (bge-reranker-v2-m3)", flush=True)
+        snapshot_download(repo_id=RERANKING_MODEL, ignore_patterns=rerank_ignore)
+        downloaded += 1
+
+    # 진행바(stderr)가 다음 상태 출력(stdout)과 한 줄에 섞이지 않게 flush.
+    if downloaded:
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+    return downloaded
 
 
 def _wait_until_ready(proc: subprocess.Popen, url: str, name: str, timeout: int = 300) -> None:
@@ -257,12 +287,12 @@ def main() -> None:
         print("[1/4] Qdrant ready")
         logger.info("Qdrant ready")
 
-        # 2. 모델 다운로드(최초 1회) — launcher 콘솔(TTY)에서 받아 진행바가 보인다.
+        # 2. 모델 준비 — 캐시에 있으면 건너뛰고, 없을 때만 받는다(진행바 표시).
         #    실패해도 치명적이지 않게 처리(서버가 자체적으로 재시도).
-        print("[2/4] Downloading models (first run only)...")
+        print("[2/4] Preparing models...")
         try:
-            _prefetch_models()
-            print("[2/4] Models ready")
+            n = _prefetch_models()
+            print(f"[2/4] Models ready ({n} downloaded)" if n else "[2/4] Models ready (cached)")
         except Exception as e:
             print(f"[2/4] Model pre-download skipped ({e}); servers will retry.")
             logger.warning("Model pre-download failed: %s", e)
