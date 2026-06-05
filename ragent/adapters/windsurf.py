@@ -39,7 +39,6 @@ workspace-level (.windsurf/hooks.json) 은 본 phase 에서 다루지 않음.
 """
 
 import json
-import sys
 from pathlib import Path
 
 from ragent.adapters.base import BaseAdapter
@@ -47,7 +46,9 @@ from ragent.modules.parsing_modules import WindsurfParser
 
 _HOOKS_PATH = Path.home() / ".codeium" / "windsurf" / "hooks.json"
 _TRANSCRIPTS_DIR = Path.home() / ".windsurf" / "transcripts"
-_RAGENT_DIR = Path(__file__).resolve().parent.parent.parent
+
+# get_adapter(name) 가 ADAPTER_REGISTRY 에서 이 어댑터를 찾는 키.
+_ADAPTER_NAME = "windsurf"
 
 
 class WindsurfAdapter(BaseAdapter):
@@ -101,17 +102,15 @@ class WindsurfAdapter(BaseAdapter):
         `{"command": "...", "powershell": "...", ...}` 형태로 한 단계 단순하다.
         Claude Code 의 `{"hooks": [{"type": "command", ...}]}` 추가 wrap 없음.
 
-        멱등성: command 문자열에 "-m ragent" 가 포함된 기존 entry 를 모두
+        멱등성: RAGent hook 으로 식별되는(is_ragent_hook) 기존 entry 를 모두
         제거한 뒤 새 hook 을 append. 두 번 호출해도 중복 등록되지 않는다.
         """
-        # NOTE: VAR=value command prefix 는 POSIX 쉘에서만 동작. Windsurf 는
-        # macOS/Linux 에서 command 필드를 bash -c 로 spawn 한다고 공식 docs 가
-        # 명시하므로 inline prefix 가 자연 작동한다. Windows 의 powershell 필드는
-        # 본 phase 에서 채우지 않음.
-        cmd = (
-            f"PYTHONPATH={_RAGENT_DIR} RAGENT_ADAPTER=windsurf "
-            f"{sys.executable} -m ragent"
-        )
+        # 셸 비종속 hook 명령(frozen exe 경로 또는 `-m ragent`)을 BaseAdapter 가
+        # 생성한다. 어댑터 선택자는 --adapter 인자로 전달된다. Windsurf 는
+        # macOS/Linux 에서 command 필드를 bash -c 로 spawn 하므로 그대로 동작한다.
+        # Windows 의 powershell 필드는 본 phase 에서 채우지 않는다(frozen Windows
+        # 지원 시 별도 처리 필요).
+        cmd = cls.build_hook_command(_ADAPTER_NAME)
         new_entries = {
             "pre_user_prompt": [{"command": cmd}],
             "post_cascade_response_with_transcript": [{"command": cmd}],
@@ -130,7 +129,7 @@ class WindsurfAdapter(BaseAdapter):
             current = [
                 entry
                 for entry in current
-                if "-m ragent" not in entry.get("command", "")
+                if not cls.is_ragent_hook(entry.get("command", ""))
             ]
             current.extend(entries)
             existing_hooks[event_name] = current

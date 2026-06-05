@@ -118,4 +118,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # frozen(PyInstaller) 빌드에서 multiprocessing spawn 자식이 exe 를 재실행할 때
+    # 부모 코드를 다시 타고 무한 증식하는 것을 막는다. non-frozen 에서는 no-op.
+    multiprocessing.freeze_support()
     main()

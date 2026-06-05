@@ -3,6 +3,7 @@
 import argparse
 
 from ragent.adapters import ADAPTER_REGISTRY
+from ragent.utils import pause_if_frozen
 
 
 def main() -> None:
@@ -16,8 +17,15 @@ def main() -> None:
         help="Which agent adapter to install RAGent into (default: claude_code)",
     )
     args = parser.parse_args()
-    adapter_cls = ADAPTER_REGISTRY[args.adapter]
-    adapter_cls.install()
+
+    try:
+        adapter_cls = ADAPTER_REGISTRY[args.adapter]
+        adapter_cls.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+    pause_if_frozen()
 
 
 if __name__ == "__main__":

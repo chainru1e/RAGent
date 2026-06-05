@@ -129,3 +129,16 @@ def is_apple_silicon() -> bool:
         return result.strip() == "1"
     except Exception:
         return False
+
+
+def pause_if_frozen(message: str = "\nPress Enter to close...") -> None:
+    """frozen(exe) 더블클릭 실행 시 콘솔 창이 종료와 함께 즉시 닫혀 출력(특히
+    비정상 종료 원인)을 볼 수 없다. frozen 일 때만 Enter 를 기다려 창을 유지한다.
+    소스 실행(python ...)에는 영향이 없고, stdin 부재/Ctrl+C 시에도 안전하다.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        input(message)
+    except (EOFError, KeyboardInterrupt):
+        pass

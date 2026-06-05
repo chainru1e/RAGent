@@ -52,6 +52,20 @@ class QdrantManager:
         )
         return result.returncode == 0
 
+    def _image_exists(self) -> bool:
+        """qdrant/qdrant 이미지가 로컬에 있는지 확인"""
+        result = subprocess.run(
+            ["docker", "image", "inspect", "qdrant/qdrant"],
+            capture_output=True
+        )
+        return result.returncode == 0
+
+    def _pull_image(self) -> bool:
+        """이미지를 받는다. capture 하지 않아 docker 자체 pull 진행 표시가 콘솔에 보인다."""
+        print("Pulling Qdrant image (first run)...")
+        result = subprocess.run(["docker", "pull", "qdrant/qdrant"])
+        return result.returncode == 0
+
     def _create_container(self) -> bool:
         """새 컨테이너 생성. 성공 시 True, 실패 시 False 반환"""
         result = subprocess.run(
@@ -96,6 +110,12 @@ class QdrantManager:
 
         if not self._start_existing_container():
             logger.info("Container not found. Creating a new one.")
+            # 이미지가 없으면 먼저 pull 한다(스트리밍 → 진행 표시가 콘솔에 보인다).
+            if not self._image_exists() and not self._pull_image():
+                raise RuntimeError(
+                    "Failed to pull Qdrant image.\n"
+                    "Please check your network and Docker, then try again."
+                )
             if not self._create_container():
                 raise RuntimeError(
                     "Failed to create Qdrant container.\n"

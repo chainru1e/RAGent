@@ -6,14 +6,15 @@ hook 호출 시점까지 미루기 위해 handler import는 lazy로 수행한다
 """
 
 import json
-import sys
 from pathlib import Path
 
 from ragent.adapters.base import BaseAdapter
 from ragent.modules.parsing_modules import ClaudeCodeParser
 
 _SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
-_RAGENT_DIR = Path(__file__).resolve().parent.parent.parent
+
+# get_adapter(name) 가 ADAPTER_REGISTRY 에서 이 어댑터를 찾는 키.
+_ADAPTER_NAME = "claude_code"
 
 
 class ClaudeCodeAdapter(BaseAdapter):
@@ -43,21 +44,19 @@ class ClaudeCodeAdapter(BaseAdapter):
         등록 위치: ~/.claude/settings.json (user-level only). project-level
         (./.claude/settings.json)은 지원하지 않는다.
 
-        등록되는 hook 명령에는 RAGENT_ADAPTER=claude_code 환경변수가 inline
-        prefix로 박힌다. RAGent 시작 시점에 ragent.adapters.get_adapter()가
-        이 환경변수를 읽어 ClaudeCodeAdapter를 선택하기 때문이다.
+        등록되는 hook 명령에는 어댑터 선택자가 `--adapter claude_code` 인자로
+        박힌다. hook 진입점(main.run)이 이 인자를 읽어 get_adapter 에 넘긴다.
+        환경변수 프리픽스(VAR=value)를 쓰지 않으므로 Windows(cmd)/POSIX(sh)
+        양쪽에서 동작한다. frozen(exe) 모드는 install exe 와 같은 디렉터리의
+        hook exe 를, 소스 모드는 활성 파이썬의 `-m ragent` 를 가리킨다.
 
-        멱등성: command 문자열에 "-m ragent"가 포함된 기존 hook entry를 모두
-        제거한 뒤 새 hook을 append한다. 따라서 두 번 호출해도 중복 등록되지
+        멱등성: RAGent hook 으로 식별되는(is_ragent_hook) 기존 entry 를 모두
+        제거한 뒤 새 hook 을 append 한다. 따라서 두 번 호출해도 중복 등록되지
         않는다.
         """
-        # NOTE: VAR=value command prefix는 POSIX 쉘에서만 동작.
-        # Windows 지원 시점에는 settings.json hook entry의 env 필드 방식으로
-        # 마이그레이션 검토 필요.
-        cmd = (
-            f"PYTHONPATH={_RAGENT_DIR} RAGENT_ADAPTER=claude_code "
-            f"{sys.executable} -m ragent"
-        )
+        # 셸 비종속 hook 명령(frozen exe 경로 또는 `-m ragent`)을 BaseAdapter 가
+        # 생성한다. 어댑터 선택자는 --adapter 인자로 전달된다.
+        cmd = cls.build_hook_command(_ADAPTER_NAME)
         hooks_config = {
             "UserPromptSubmit": [
                 {"hooks": [{"type": "command", "command": cmd, "timeout": 5}]}
@@ -83,7 +82,7 @@ class ClaudeCodeAdapter(BaseAdapter):
                 entry
                 for entry in existing_hooks[event_name]
                 if not any(
-                    "-m ragent" in h.get("command", "")
+                    cls.is_ragent_hook(h.get("command", ""))
                     for h in entry.get("hooks", [])
                 )
             ]

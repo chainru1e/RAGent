@@ -9,6 +9,13 @@ LOG_FILE = LOG_DIR / "ragent.log"
 LLM_LOG_FILE = LOG_DIR / "llm_server.log"
 RAGENT_SERVER_LOG_FILE = LOG_DIR / "ragent_server.log"
 VECTORDB_LOG_FILE = LOG_DIR / "vectordb_server.log"
+
+# launcher 가 spawn 하는 자식 서버의 stdout/stderr 원본 캡처 파일.
+# 자식이 startup(특히 import/native lib 로드)에서 죽으면 traceback 이 stderr 로
+# 가는데, 그 시점엔 아직 자식의 logging 이 안 붙어 *_server.log 에 안 남는다.
+# 그 raw 출력을 여기로 받아 crash 원인을 보존한다.
+LLM_SERVER_CONSOLE_LOG = LOG_DIR / "llm_server.console.log"
+RAGENT_SERVER_CONSOLE_LOG = LOG_DIR / "ragent_server.console.log"
 FAILED_CHUNKS_FILE = BASE_DIR / "failed_chunks.jsonl"
 
 RAGENT_SERVER_HOST = "127.0.0.1"
