@@ -8,7 +8,12 @@ from typing import Any
 
 import requests
 
-from ragent.config import LLM_API_BASE_URL, RAGENT_SERVER_URL
+from ragent.config import (
+    LLM_API_BASE_URL,
+    LLM_SERVER_CONSOLE_LOG,
+    RAGENT_SERVER_CONSOLE_LOG,
+    RAGENT_SERVER_URL,
+)
 from ragent.logging_config import setup_logging
 from ragent.utils import pause_if_frozen
 from ragent.vectordb_manager import QdrantManager
@@ -208,6 +213,8 @@ def main() -> None:
 
     llm_proc = None
     server_proc = None
+    llm_console = None
+    server_console = None
     stop_event = threading.Event()
 
     try:
@@ -219,10 +226,13 @@ def main() -> None:
 
         # 2. LLM 서버 — 최대 5분 대기
         print("[2/3] Starting LLM server...")
+        # stdout/stderr 를 파일로 캡처(stderr 는 stdout 으로 합침). DEVNULL 로 버리면
+        # 자식이 startup 에서 죽었을 때 traceback 이 사라진다.
+        llm_console = open(LLM_SERVER_CONSOLE_LOG, "w", encoding="utf-8")
         llm_proc = subprocess.Popen(
             _service_command(LLM_SERVER_MODULE, LLM_SERVER_EXE),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=llm_console,
+            stderr=subprocess.STDOUT,
         )
         _wait_until_ready(llm_proc, f"{LLM_API_BASE_URL}/models", "LLM server")
         print("[2/3] LLM server ready")
@@ -230,10 +240,11 @@ def main() -> None:
 
         # 3. RAGent 서버 — 최대 5분 대기
         print("[3/3] Starting RAGent server...")
+        server_console = open(RAGENT_SERVER_CONSOLE_LOG, "w", encoding="utf-8")
         server_proc = subprocess.Popen(
             _service_command(RAGENT_SERVER_MODULE, RAGENT_SERVER_EXE),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=server_console,
+            stderr=subprocess.STDOUT,
         )
         _wait_until_ready(server_proc, f"{RAGENT_SERVER_URL}/health", "RAGent server")
         print("[3/3] RAGent server ready")
@@ -295,6 +306,14 @@ def main() -> None:
         QdrantManager().stop()
         logger.info("All servers stopped")
         print("All servers stopped")
+
+        # 4. 콘솔 캡처 파일 닫기 (자식 프로세스 종료 이후라 추가 쓰기 없음)
+        for f in (server_console, llm_console):
+            if f is not None:
+                try:
+                    f.close()
+                except Exception:
+                    pass
 
     # frozen(exe) 더블클릭 시 콘솔이 종료와 함께 즉시 닫혀 (특히 비정상 종료)
     # 원인을 못 보는 문제 방지. 위 finally 의 정리/에러 출력까지 끝난 뒤 대기.
