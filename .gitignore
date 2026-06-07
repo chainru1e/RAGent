@@ -7,3 +7,7 @@ __pycache__/
 *.spec
 build/
 dist/
+
+# GT 라벨링 파이프라인(gt_labeling.py) 라벨 캐시
+.gt_cache/
+ragent/evaluation/.gt_cache/

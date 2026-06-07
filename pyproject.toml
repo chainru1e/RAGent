@@ -27,6 +27,7 @@ dev = [
 # 프로덕션 런타임에는 불필요하므로 별도 extra 로 분리한다: pip install -e ".[eval]"
 eval = [
     "ranx",
+    "anthropic",  # GT 라벨링 파이프라인(gt_labeling.py)의 gen/judge LLM 호출용
 ]
 
 [tool.setuptools.packages.find]
