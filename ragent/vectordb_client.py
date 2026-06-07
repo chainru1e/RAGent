@@ -289,6 +289,18 @@ class QdrantStorage:
         logger.debug("Hybrid search returned %d results from collection %s", len(chunks), self.collection_name)
         return chunks
 
+    def dense_only_search(self, query_dense, limit: int = 5) -> list[Chunk]:
+        """Dense 벡터만 사용하는 단순 검색 (평가용)."""
+        vec = query_dense.tolist() if hasattr(query_dense, "tolist") else query_dense
+        results = self.client.query_points(
+            collection_name=self.collection_name,
+            query=vec,
+            using="dense_long",
+            limit=limit,
+            with_payload=True,
+        )
+        return [self.payload_to_chunk(point.payload) for point in results.points]
+
     def get_stats(self) -> dict:
         try:
             info = self.client.get_collection(self.collection_name)
